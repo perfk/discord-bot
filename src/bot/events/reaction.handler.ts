@@ -111,5 +111,11 @@ export class ReactionHandler {
         } catch (err) {
             console.error(`[ReactionHandler] Failed to post rating — status=${err?.response?.status} body=${JSON.stringify(err?.response?.data)} message=${err?.message}`);
         }
+
+        // Remove the user's own reaction after recording it.
+        // This keeps the reaction counts at zero so future voters are not swayed
+        // by seeing which option others chose.
+        await reaction.users.remove(user.id).catch(() => null);
+        console.log(`[ReactionHandler] Removed reaction ${emoji} from user ${user.id} to preserve voting neutrality`);
     }
 }

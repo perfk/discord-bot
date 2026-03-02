@@ -217,28 +217,45 @@ export class ServerController {
             throw new Error(`Thread ${body.threadId} not found`);
         }
 
-        const message = await thread.messages.fetch(body.messageId);
-        if (!message) {
-            throw new Error(`Message ${body.messageId} not found`);
-        }
-
         const embedBuilder = new EmbedBuilder()
             .setDescription(body.embed.description)
             .setColor(body.embed.color as any);
         if (body.embed.footer) embedBuilder.setFooter({ text: body.embed.footer });
 
-        await message.edit({ embeds: [embedBuilder] });
-
+        // When the outcome is set: delete the original message and post a fresh one
+        // so that Discord notifies channel members who missed the original loading message
+        // (outcomes are typically posted 45-60 min after the loading message).
         if (body.addReactions && body.uniqueName) {
-            // Add reactions sequentially (order matters for Discord display)
-            await message.react('👍');
-            await message.react('🆗');
-            await message.react('👎');
+            // Delete the original loading message (best-effort; may already be gone)
+            try {
+                const oldMessage = await thread.messages.fetch(body.messageId);
+                await oldMessage.delete();
+                console.log(`[edit-discord-message] Deleted original messageId=${body.messageId}`);
+            } catch (err) {
+                console.warn(`[edit-discord-message] Could not delete original message ${body.messageId}:`, err?.message);
+            }
 
-            // Register this message so the reaction handler can find it
-            ratableMessages.set(body.messageId, { uniqueName: body.uniqueName, historyEntryId: body.historyEntryId });
-            console.log(`[edit-discord-message] Registered messageId=${body.messageId} as ratable for uniqueName=${body.uniqueName} historyEntryId=${body.historyEntryId} — ratableMessages size=${ratableMessages.size}`);
+            // Post a new message in the same thread so members see it as new activity
+            const newMessage = await thread.send({ embeds: [embedBuilder] });
+
+            // Add reactions sequentially (order matters for Discord display)
+            await newMessage.react('👍');
+            await newMessage.react('🆗');
+            await newMessage.react('👎');
+
+            // Register the NEW message so the reaction handler can find it
+            ratableMessages.set(newMessage.id, { uniqueName: body.uniqueName, historyEntryId: body.historyEntryId });
+            console.log(`[edit-discord-message] Replaced messageId=${body.messageId} with newMessageId=${newMessage.id} as ratable for uniqueName=${body.uniqueName} — ratableMessages size=${ratableMessages.size}`);
+
+            return { ok: true, newMessageId: newMessage.id };
         }
+
+        // No outcome yet — just edit the existing message in-place (no notification needed)
+        const message = await thread.messages.fetch(body.messageId);
+        if (!message) {
+            throw new Error(`Message ${body.messageId} not found`);
+        }
+        await message.edit({ embeds: [embedBuilder] });
 
         return { ok: true };
     }
