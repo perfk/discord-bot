@@ -21,7 +21,7 @@ interface AdminStats {
 
 const MIN_PLAYERS_TO_OPEN = 10;
 const STALE_THRESHOLD_SECONDS = 600;
-const POLL_INTERVAL_MS = 20 * 1000;
+const POLL_INTERVAL_MS = 2 * 60 * 1000;
 
 @Injectable()
 export class SessionService implements OnModuleInit {
