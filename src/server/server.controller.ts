@@ -22,7 +22,7 @@ export class ServerController {
      * Called by the website when a GM clicks "Load Mission".
      */
     @Post('/set-scenario')
-    async setScenario(@Body() body: { scenarioId: string }): Promise<object> {
+    async setScenario(@Body() body: { scenarioId: string; missionString?: string }): Promise<object> {
         const configPath = process.env.REFORGER_SERVER_CONFIG_PATH;
         const scriptPath = process.env.MAIN_REFORGER_SERVER_START_SCRIPT_PATH;
 
@@ -32,6 +32,18 @@ export class ServerController {
             } catch (err) {
                 console.error('Failed to update config.json:', err);
                 // Not fatal — proceed to restart
+            }
+
+            // Write mission_context.json so start.ps1 can forward the human-readable
+            // mission name to the mock server's load signal during local development.
+            if (body.missionString) {
+                try {
+                    const fs = require('fs');
+                    const ctx = JSON.stringify({ missionString: body.missionString }, null, 2);
+                    fs.writeFileSync(`${configPath}\\mission_context.json`, ctx, 'utf8');
+                } catch (err) {
+                    console.error('Failed to write mission_context.json:', err);
+                }
             }
         }
 
