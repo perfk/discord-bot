@@ -34,7 +34,7 @@
     "@types/gamedig": "^5.0.3",
     "axios": "^1.13.5",
     "chokidar": "^3.5.3",
-    "discord.js": "14.11.0",
+    "discord.js": "^14.26.4",
     "gamedig": "^5.2.0",
     "moment": "^2.29.1",
     "mongodb": "^4.17.2",

@@ -17,6 +17,18 @@ import { ReactionHandler } from './events/reaction.handler';
 import { SessionsModule } from '../sessions/sessions.module';
 
 
+import { OpenUucsCommand } from './commands/uucs/open-uucs.command';
+import { IssueWarningCommand } from './commands/uucs/issue-warning.command';
+import { IssueBanCommand } from './commands/uucs/issue-ban.command';
+import { IssueWarningUserCommand } from './commands/uucs/issue-warning-user.command';
+import { WarnCommand } from './commands/uucs/warn.command';
+import { UucsBanCommand } from './commands/uucs/ban.command';
+import { StartInfractionForumThreadCommand } from './commands/uucs/start-infraction-thread.command';
+import { TimeoutUserCommand } from './commands/uucs/timeout-user.command';
+import { TimeoutMessageCommand } from './commands/uucs/timeout-message.command';
+import { SpammerBanUserCommand } from './commands/uucs/spammer-ban-user.command';
+import { SpammerBanMessageCommand } from './commands/uucs/spammer-ban-message.command';
+
 @Module({
   imports: [
     DiscordModule.forFeature(),
@@ -37,6 +49,17 @@ import { SessionsModule } from '../sessions/sessions.module';
     GuestResetCommand,
     PonyBotListener,
     ReactionHandler,
+    OpenUucsCommand,
+    IssueWarningCommand,
+    IssueBanCommand,
+    IssueWarningUserCommand,
+    WarnCommand,
+    UucsBanCommand,
+    StartInfractionForumThreadCommand,
+    TimeoutUserCommand,
+    TimeoutMessageCommand,
+    SpammerBanUserCommand,
+    SpammerBanMessageCommand,
   ],
 })
 export class BotModule { }

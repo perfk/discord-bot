@@ -47,13 +47,15 @@ export class PonyBotListener {
     const triggerCooldown = this.cooldowns[trigger];
     if (triggerCooldown && now < triggerCooldown) {
       const timeLeft = Math.ceil((triggerCooldown - now) / 1000);
-      await message.channel.send(`${trigger} is on cooldown! ${timeLeft} seconds remaining.`);
+      await (message.channel as any).send(
+        `${trigger} is on cooldown! ${timeLeft} seconds remaining.`,
+      );
       return;
     }
 
     // Send random image from the trigger's images array
     const imageUrl = this.randomChoice(triggerDoc.images);
-    await message.channel.send(imageUrl);
+    await (message.channel as any).send(imageUrl);
     this.cooldowns[trigger] = now + this.COOLDOWN_DURATION;
   }
 

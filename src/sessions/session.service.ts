@@ -263,6 +263,7 @@ export class SessionService implements OnModuleInit {
 
   private async upsertPlayerMappings(connectedPlayers: Record<string, string>): Promise<void> {
     for (const [platformId, playerName] of Object.entries(connectedPlayers)) {
+      // Legacy support
       const result = await this.db.collection('configs').updateOne(
         { 'player_mappings.platformId': platformId },
         { $set: { 'player_mappings.$.playerName': playerName } },
@@ -274,6 +275,43 @@ export class SessionService implements OnModuleInit {
           { upsert: true },
         );
       }
+
+      // UUCS: New Profiles
+      await this.db.collection('user_profiles').updateOne(
+        { platformIds: platformId },
+        { 
+          $set: { 
+            lastKnownAlias: playerName,
+            'stats.lastSeen': new Date()
+          },
+          $addToSet: {
+            knownAliases: playerName
+          },
+          $setOnInsert: {
+            discordId: null,
+            username: playerName,
+            platformIds: [platformId],
+            notes: "",
+            discordRoles: [],
+            status: {
+              isArmaBanned: false,
+              isDiscordBanned: false,
+              banExpiresAt: null,
+              isLifeBanned: false,
+              isBlacklisted: false,
+              isProbationary: false,
+            },
+            stats: {
+              warningCount: 0,
+              banCount: 0,
+              totalMinutes90d: 0,
+              totalMinutes28d: 0,
+              isMember: false,
+            }
+          }
+        },
+        { upsert: true }
+      );
     }
   }
 
