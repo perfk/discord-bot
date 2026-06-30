@@ -6,6 +6,36 @@ import axios from 'axios';
 import { InjectDb } from 'nest-mongodb';
 import * as mongo from 'mongodb';
 
+function formatDurationRaw(durationMinutes: number | null): string {
+  if (durationMinutes === null || durationMinutes <= 0) {
+    return 'Permanent';
+  }
+
+  const minutes = durationMinutes;
+
+  if (minutes % 525600 === 0) {
+    const years = minutes / 525600;
+    return `${years} ${years === 1 ? 'Year' : 'Years'}`;
+  }
+  if (minutes % 43200 === 0) {
+    const months = minutes / 43200;
+    return `${months} ${months === 1 ? 'Month' : 'Months'}`;
+  }
+  if (minutes % 10080 === 0) {
+    const weeks = minutes / 10080;
+    return `${weeks} ${weeks === 1 ? 'Week' : 'Weeks'}`;
+  }
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return `${days} ${days === 1 ? 'Day' : 'Days'}`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} ${hours === 1 ? 'Hour' : 'Hours'}`;
+  }
+  return `${minutes} ${minutes === 1 ? 'Minute' : 'Minutes'}`;
+}
+
 @Controller('uucs')
 export class UucsController {
   constructor(
@@ -24,11 +54,23 @@ export class UucsController {
 
     const { targetDiscordId, type, ruleId, ruleTitle, reason, durationMinutes, evidenceUrls, threadUrl } = body;
 
+    const ruleDoc = await this.db.collection('rules').findOne({ ruleId });
+    const isTOS = ruleDoc?.isTOS === true || ruleId === 'G1';
+    const currentRuleTitle = ruleTitle || ruleDoc?.title || '';
+    const fullRule = currentRuleTitle ? `${ruleId}: ${currentRuleTitle}` : ruleId;
+
+    const config = await this.db.collection('configs').findOne({});
+    const dbWarningsChannelId = config?.warningsChannelId;
+    const timeoutRoleId = config?.timeoutRoleId || '1513121726668607649';
+    const spammerRoleId = config?.spammerRoleId || '1513132881097261107';
+    const gameBanRoleId = config?.gameBanRoleId || '1513121256604565605';
+    const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+
     const discordClient = this.discordProvider.getClient();
     const guild = discordClient.guilds.cache.get(process.env.DISCORD_SERVER_ID);
     if (!guild) return { ok: false, error: 'Guild not found' };
 
-    const warningsChannelId = process.env.DISCORD_WARNINGS_CHANNEL_ID || process.env.DISCORD_BOT_CHANNEL;
+    const warningsChannelId = dbWarningsChannelId || process.env.DISCORD_WARNINGS_CHANNEL_ID || process.env.DISCORD_BOT_CHANNEL;
     const warningsChannel = guild.channels.cache.get(warningsChannelId) as TextChannel;
 
     if (warningsChannel) {
@@ -42,8 +84,7 @@ export class UucsController {
       else if (type === 'PROBATION_FAILURE') actionText = 'placed on probation failure';
 
       const targetMention = targetDiscordId ? `Hi <@${targetDiscordId}>, you have` : 'A user has';
-      const fullRule = ruleTitle ? `${ruleId}: ${ruleTitle}` : ruleId;
-      const description = `${targetMention} been ${actionText} for breaking Rule **${fullRule}**.`;
+      const description = `${targetMention} been ${actionText} for breaking Rule **${fullRule}**.\n\n**Rules & Standards:** ${websiteUrl}/rules`;
 
       const embed = new EmbedBuilder()
         .setTitle(`🛑 Infraction Issued`)
@@ -53,10 +94,10 @@ export class UucsController {
       embed.addFields({ name: 'Staff Remarks', value: reason || 'No remarks provided' });
 
       if (durationMinutes) {
-        embed.addFields({ name: 'Duration', value: `${durationMinutes / 65 > 24 ? durationMinutes / 60 : durationMinutes} ${durationMinutes / 60 > 24 ? 'Hours' : 'Minutes'}`, inline: true });
+        embed.addFields({ name: 'Duration', value: formatDurationRaw(durationMinutes), inline: true });
       }
 
-      if (ruleId !== 'G1' && evidenceUrls && Array.isArray(evidenceUrls) && evidenceUrls.length > 0) {
+      if (!isTOS && evidenceUrls && Array.isArray(evidenceUrls) && evidenceUrls.length > 0) {
         embed.addFields({
           name: 'Evidence',
           value: evidenceUrls.map((url: string, idx: number) => `[Evidence ${idx + 1}](${url})`).join('\n')
@@ -68,20 +109,43 @@ export class UucsController {
       }
 
       const targetMember = targetDiscordId ? await guild.members.fetch(targetDiscordId).catch(() => null) : null;
-      const config = await this.db.collection('configs').findOne({});
-      const timeoutRoleId = config?.timeoutRoleId || '1513121726668607649';
-      const spammerRoleId = config?.spammerRoleId || '1513132881097261107';
-      const gameBanRoleId = config?.gameBanRoleId || '1513121256604565605';
-      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+
+      const isBan = type === 'BAN' || type === 'LIFE_BAN';
+
+      if (isBan && isTOS && targetDiscordId) {
+        const banReason = `TOS, ${websiteUrl}/dashboard/staff/users?q=${targetDiscordId}`;
+        
+        // Send DM first if member is present in the guild
+        if (targetMember) {
+          const targetUser = targetMember.user;
+          const dmContent = `You have been permanently banned from the Global Conflicts Discord server due to a TOS violation.\n\n**Rule Broken:** ${fullRule}\n**Reason:** ${reason || 'No remarks provided'}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules\n\nYou can appeal this ban by clicking the button below.`;
+          
+          const appealButton = new ButtonBuilder()
+            .setLabel('Appeal Ban')
+            .setStyle(ButtonStyle.Link)
+            .setURL(`${websiteUrl}/user/appeals`);
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(appealButton);
+          
+          await targetUser.send({ content: dmContent, components: [row] }).catch(() => null);
+        }
+
+        if (targetMember) {
+          await targetMember.ban({ reason: banReason }).catch(err => console.error("Failed to natively ban member:", err));
+        } else {
+          await guild.bans.create(targetDiscordId, { reason: banReason }).catch(err => console.error("Failed to natively ban user ID:", err));
+        }
+      }
 
       if (targetMember) {
-        if (type === 'TIMEOUT') {
-          await targetMember.roles.add(timeoutRoleId).catch(err => console.error("Failed to add Timeout role:", err));
+        const isTimeout = type === 'TIMEOUT' || (type === 'WARNING' && durationMinutes && durationMinutes > 0);
+        if (isTimeout) {
           await targetMember.timeout(durationMinutes * 60 * 1000, reason || 'Timeout').catch(err => console.error("Failed to set native timeout:", err));
           
           // Send DM to target user
           const targetUser = targetMember.user;
-          let dmContent = `You have been timed out on Global Conflicts.\n\n**Reason:** ${reason || 'No remarks provided'}\n**Duration:** ${durationMinutes} minutes.`;
+          const actionWord = type === 'WARNING' ? 'issued a warning with a timeout' : 'timed out';
+          const durationText = formatDurationRaw(durationMinutes);
+          let dmContent = `You have been ${actionWord} on Global Conflicts.\n\n**Rule Broken:** ${fullRule}\n**Reason:** ${reason || 'No remarks provided'}\n**Duration:** ${durationText}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules`;
           const dmOptions: any = { content: dmContent };
 
           if (durationMinutes === 1440) {
@@ -98,12 +162,14 @@ export class UucsController {
         } else if (type === 'SPAMMER_BAN') {
           await targetMember.roles.add(spammerRoleId).catch(err => console.error("Failed to add Spammer role:", err));
           // No appeal DM is sent to the spammer!
-        } else if (type === 'BAN' && durationMinutes && durationMinutes <= 1440) {
+        } else if (isBan && !isTOS) {
           await targetMember.roles.add(gameBanRoleId).catch(err => console.error("Failed to add Game Ban role:", err));
           
           // Send appeal DM
           const targetUser = targetMember.user;
-          const dmContent = `You have been temporarily banned from the Global Conflicts game server.\n\n**Reason:** ${reason || 'No remarks provided'}\n**Duration:** ${durationMinutes / 60} Hours.\n\nYou can appeal this ban by clicking the button below.`;
+          const durationText = durationMinutes ? `for ${formatDurationRaw(durationMinutes)}` : 'permanently';
+          const dmContent = `You have been banned ${durationText} from the Global Conflicts game server.\n\n**Rule Broken:** ${fullRule}\n**Reason:** ${reason || 'No remarks provided'}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules\n\nYou can appeal this ban by clicking the button below.`;
+          
           const appealButton = new ButtonBuilder()
             .setLabel('Appeal Ban')
             .setStyle(ButtonStyle.Link)
@@ -113,7 +179,12 @@ export class UucsController {
         }
       }
 
-      const sentMessage = await warningsChannel.send({ embeds: [embed] });
+      const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID;
+      let content = targetDiscordId ? `<@${targetDiscordId}>` : undefined;
+      if (isTOS && adminRoleId) {
+        content = content ? `${content} <@&${adminRoleId}>` : `<@&${adminRoleId}>`;
+      }
+      const sentMessage = await warningsChannel.send({ content, embeds: [embed] });
       return { ok: true, messageId: sentMessage.id, channelId: warningsChannel.id };
     }
 
@@ -133,6 +204,9 @@ export class UucsController {
     if (!channelId || !messageId) {
       return { ok: false, error: 'Missing channelId or messageId' };
     }
+
+    const ruleDoc = await this.db.collection('rules').findOne({ ruleId });
+    const isTOS = ruleDoc?.isTOS === true || ruleId === 'G1';
 
     const discordClient = this.discordProvider.getClient();
     const guild = discordClient.guilds.cache.get(process.env.DISCORD_SERVER_ID);
@@ -167,7 +241,7 @@ export class UucsController {
         embed.addFields({ name: 'Duration', value: `${durationMinutes / 60} Hours`, inline: true });
       }
 
-      if (ruleId !== 'G1' && evidenceUrls && Array.isArray(evidenceUrls) && evidenceUrls.length > 0) {
+      if (!isTOS && evidenceUrls && Array.isArray(evidenceUrls) && evidenceUrls.length > 0) {
         embed.addFields({
           name: 'Evidence',
           value: evidenceUrls.map((url: string, idx: number) => `[Evidence ${idx + 1}](${url})`).join('\n')
@@ -557,6 +631,144 @@ export class UucsController {
           discordRoles: member.roles.cache.map(r => ({ id: r.id, name: r.name, color: r.hexColor })),
         }
       };
+    } catch (error: any) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  @Post('/tickets/close-thread')
+  async closeThread(
+    @Body() body: { threadId: string; username: string },
+    @Headers('x-api-secret') apiSecret: string,
+  ): Promise<object> {
+    if (!process.env.API_SECRET || apiSecret !== process.env.API_SECRET) {
+      throw new UnauthorizedException('Invalid API Secret');
+    }
+
+    const { threadId, username } = body;
+    if (!threadId) return { ok: false, error: 'Missing threadId' };
+
+    const discordClient = this.discordProvider.getClient();
+    try {
+      const channel = await discordClient.channels.fetch(threadId).catch(() => null);
+      if (channel && channel.isThread()) {
+        await channel.send({ content: `🔒 Ticket closed by **${username || 'Staff'}**.` }).catch(() => null);
+        await channel.setLocked(true).catch(() => null);
+        await channel.setArchived(true).catch(() => null);
+        return { ok: true };
+      }
+      return { ok: false, error: 'Channel is not a thread or not found' };
+    } catch (error: any) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  @Post('/tickets/merge-threads')
+  async mergeThreads(
+    @Body() body: { sourceThreadId: string; targetThreadId: string; openerDiscordId: string; username: string },
+    @Headers('x-api-secret') apiSecret: string,
+  ): Promise<object> {
+    if (!process.env.API_SECRET || apiSecret !== process.env.API_SECRET) {
+      throw new UnauthorizedException('Invalid API Secret');
+    }
+
+    const { sourceThreadId, targetThreadId, openerDiscordId, username } = body;
+    if (!sourceThreadId || !targetThreadId) return { ok: false, error: 'Missing sourceThreadId or targetThreadId' };
+
+    const discordClient = this.discordProvider.getClient();
+    try {
+      const sourceChannel = await discordClient.channels.fetch(sourceThreadId).catch(() => null);
+      const targetChannel = await discordClient.channels.fetch(targetThreadId).catch(() => null);
+
+      if (sourceChannel && sourceChannel.isThread()) {
+        const pingMention = openerDiscordId ? `<@${openerDiscordId}> ` : '';
+        await sourceChannel.send({
+          content: `🔒 ${pingMention}This ticket has been merged into <#${targetThreadId}> by **${username || 'Staff'}**.`
+        }).catch(() => null);
+        await sourceChannel.setLocked(true).catch(() => null);
+        await sourceChannel.setArchived(true).catch(() => null);
+      }
+
+      if (targetChannel && targetChannel.isThread()) {
+        await targetChannel.send({
+          content: `ℹ️ Another ticket (<#${sourceThreadId}>) was merged into this ticket by **${username || 'Staff'}**.`
+        }).catch(() => null);
+      }
+
+      return { ok: true };
+    } catch (error: any) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  @Post('/tickets/send-panel')
+  async sendPanel(
+    @Body() body: { channelId: string },
+    @Headers('x-api-secret') apiSecret: string,
+  ): Promise<object> {
+    if (!process.env.API_SECRET || apiSecret !== process.env.API_SECRET) {
+      throw new UnauthorizedException('Invalid API Secret');
+    }
+
+    const { channelId } = body;
+    if (!channelId) return { ok: false, error: 'Missing channelId' };
+
+    const discordClient = this.discordProvider.getClient();
+    try {
+      const channel = await discordClient.channels.fetch(channelId).catch(() => null) as TextChannel;
+      if (!channel || !channel.isTextBased()) return { ok: false, error: 'Channel not found or not text-based' };
+
+      const config = await this.db.collection('configs').findOne({});
+
+      const title = config?.ticketPanelTitle || 'Contact the GC Staff';
+      let description = config?.ticketPanelDescription || 
+        '**Discord Moderators**\nSelect this for any issues directly related to this Discord server.\n- Reporting Discord rule violations and toxic behavior.\n- Assistance with Discord roles or channel access.\n- General questions about our community.\n\n' +
+        '**Arma Game Masters**\nSelect this for anything related to our Arma Reforger servers.\n- Reporting in-game rule breakers or exploiting.\n- In-game ban appeals.\n- Reporting Arma server crashes or severe performance issues.\n- General in-game support and inquiries.\nIf you need immediate in-game support, please write in the game chat to alert a GM to your ticket.\n\n' +
+        '**Admin Team**\nEscalation Only. Contact the Admin team only if your issue cannot be resolved by our regular support staff. Misuse of this ticket may result in a warning. Use this only as a last resort for severe issues, community-wide problems, or high-level escalations.\n\n' +
+        '**Appeals**\nLink your discord account to our website to see your infractions and options to appeal';
+
+      // Normalize HTML bold tags to Discord Markdown
+      description = description.replace(/<\/?b>/gi, '**');
+
+      const dmLabel = config?.ticketPanelButtonDmLabel || 'Discord Moderators';
+      const gmLabel = config?.ticketPanelButtonGmLabel || 'Arma Game Masters';
+      const adLabel = config?.ticketPanelButtonAdLabel || 'Admin Team';
+      const appealLabel = config?.ticketPanelButtonAppealLabel || 'Appeals';
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(description)
+        .setColor('#2ea8ff');
+
+      const dmButton = new ButtonBuilder()
+        .setCustomId('uucs_ticket_btn_dm')
+        .setLabel(dmLabel)
+        .setEmoji('🛡️')
+        .setStyle(ButtonStyle.Secondary);
+
+      const gmButton = new ButtonBuilder()
+        .setCustomId('uucs_ticket_btn_gm')
+        .setLabel(gmLabel)
+        .setEmoji('🎮')
+        .setStyle(ButtonStyle.Secondary);
+
+      const adButton = new ButtonBuilder()
+        .setCustomId('uucs_ticket_btn_ad')
+        .setLabel(adLabel)
+        .setEmoji('⚙️')
+        .setStyle(ButtonStyle.Secondary);
+
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+      const appealButton = new ButtonBuilder()
+        .setLabel(appealLabel)
+        .setEmoji('🔗')
+        .setStyle(ButtonStyle.Link)
+        .setURL(`${websiteUrl}/user/appeals`);
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(dmButton, gmButton, adButton, appealButton);
+
+      await channel.send({ embeds: [embed], components: [row] });
+      return { ok: true };
     } catch (error: any) {
       return { ok: false, error: error.message };
     }

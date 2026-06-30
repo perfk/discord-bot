@@ -6,18 +6,16 @@ import {
   Param,
   ParamType,
   EventParams,
+  Choice,
 } from '@discord-nestjs/core';
 import {
   ChatInputCommandInteraction,
   ClientEvents,
-  EmbedBuilder,
   GuildMember,
-  TextChannel,
 } from 'discord.js';
 import { InjectDb } from 'nest-mongodb';
 import * as mongo from 'mongodb';
 import axios from 'axios';
-import { COLOR_ERROR } from '../../../helpers/colors';
 
 class BanSlashCommandParams {
   @Param({ description: 'User to ban', required: true, type: ParamType.USER })
@@ -39,18 +37,31 @@ class BanSlashCommandParams {
   reason?: string;
 
   @Param({
-    description: 'Ban duration in hours (0 for permanent/life ban)',
-    required: false,
-    type: ParamType.INTEGER,
+    description: 'Ban duration based on the selected rule options (autocomplete)',
+    required: true,
+    type: ParamType.STRING,
+    autocomplete: true,
   })
-  duration?: number;
+  duration: string;
+
+  @Choice({
+    BOTH: 'BOTH',
+    ARMA: 'ARMA',
+    DISCORD: 'DISCORD',
+  })
+  @Param({
+    description: 'Platforms to ban',
+    required: true,
+    type: ParamType.STRING,
+  })
+  platforms: string;
 
   @Param({
-    description: 'Platforms (BOTH, ARMA, DISCORD)',
+    description: 'Message Link or ID to associate with this ban as evidence',
     required: false,
     type: ParamType.STRING,
   })
-  platforms?: string;
+  message?: string;
 
   @Param({
     description: 'Evidence File Upload (Drag & Drop here)',
@@ -58,13 +69,26 @@ class BanSlashCommandParams {
     type: ParamType.ATTACHMENT,
   })
   evidence_file?: any;
+}
 
-  @Param({
-    description: 'Evidence Image URL (pasted link)',
-    required: false,
-    type: ParamType.STRING,
-  })
-  evidence_url?: string;
+function parseDurationStringToMinutes(durationStr: string): number | null {
+  const lower = durationStr.toLowerCase().trim();
+  if (lower.includes('perm') || lower.includes('life') || lower.includes('blacklist')) {
+    return null; // Permanent
+  }
+
+  const match = lower.match(/^(\d+)\s*(week|month|year|day|hour|min)s?$/);
+  if (match) {
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    if (unit.startsWith('week')) return value * 7 * 24 * 60;
+    if (unit.startsWith('month')) return value * 30 * 24 * 60;
+    if (unit.startsWith('year')) return value * 365 * 24 * 60;
+    if (unit.startsWith('day')) return value * 24 * 60;
+    if (unit.startsWith('hour')) return value * 60;
+    if (unit.startsWith('min')) return value;
+  }
+  return null;
 }
 
 @Command({
@@ -91,18 +115,35 @@ export class UucsBanCommand {
       return;
     }
 
-    // Permission check: Admin or Reforger GM roles
+    // Permission check: Admin, Reforger GM, or Discord Moderator roles
     const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID;
     const gmRoleId = process.env.DISCORD_REFORGERGM_ROLE_ID;
-    const hasPermission =
-      member.roles.cache.has(adminRoleId) || member.roles.cache.has(gmRoleId);
+    const isDiscordMod = member.roles.cache.some((r) =>
+      r.name.toLowerCase().includes('moderator'),
+    );
+    
+    const isAdmin = member.roles.cache.has(adminRoleId);
+    const isGM = member.roles.cache.has(gmRoleId);
 
-    if (!hasPermission) {
+    if (!isAdmin && !isGM && !isDiscordMod) {
       await interaction.reply({
         content: 'You do not have permission to run this command.',
         ephemeral: true,
       });
       return;
+    }
+
+    const durationMinutes = parseDurationStringToMinutes(options.duration);
+    
+    const isGMOnly = isGM && !isAdmin && !isDiscordMod;
+    if (isGMOnly) {
+      if (durationMinutes === null || durationMinutes > 24 * 60) {
+        await interaction.reply({
+          content: 'Game Masters can only issue temporary bans for a maximum of 24 hours.',
+          ephemeral: true,
+        });
+        return;
+      }
     }
 
     await interaction.deferReply({ ephemeral: true });
@@ -111,22 +152,55 @@ export class UucsBanCommand {
       const targetUserId = options.user;
       const ruleId = options.rule;
       const reason = options.reason || 'No reason provided';
-      const durationHours = options.duration ?? 0;
-      const durationMinutes = durationHours * 60;
 
-      const type = durationHours === 0 ? 'LIFE_BAN' : 'BAN';
+      const type = durationMinutes === null ? 'LIFE_BAN' : 'BAN';
 
-      const platformsInput = options.platforms?.toUpperCase() || 'BOTH';
+      const platformsInput = options.platforms.toUpperCase();
+
       let platforms = ['ARMA', 'DISCORD'];
       if (platformsInput === 'ARMA') platforms = ['ARMA'];
       else if (platformsInput === 'DISCORD') platforms = ['DISCORD'];
 
       const evidenceUrls: string[] = [];
-      if (options.evidence_url) {
-        evidenceUrls.push(options.evidence_url);
-      }
       if (options.evidence_file && options.evidence_file.url) {
         evidenceUrls.push(options.evidence_file.url);
+      }
+
+      let discordMessageId = null;
+      if (options.message) {
+        let channelId = null;
+        let messageId = null;
+        const match = options.message.match(/channels\/\d+\/(\d+)\/(\d+)/);
+        if (match) {
+          channelId = match[1];
+          messageId = match[2];
+        } else {
+          messageId = options.message.trim();
+        }
+
+        discordMessageId = messageId;
+
+        try {
+          let targetMsg = null;
+          if (channelId) {
+            const channel = guild.channels.cache.get(channelId);
+            if (channel && channel.isTextBased()) {
+              targetMsg = await channel.messages.fetch(messageId).catch(() => null);
+            }
+          } else {
+            targetMsg = await interaction.channel.messages.fetch(messageId).catch(() => null);
+          }
+
+          if (targetMsg && targetMsg.attachments.size > 0) {
+            targetMsg.attachments.forEach((att: any) => {
+              if (att.url && !evidenceUrls.includes(att.url)) {
+                evidenceUrls.push(att.url);
+              }
+            });
+          }
+        } catch (err) {
+          console.error('Failed to auto-archive target message attachments:', err);
+        }
       }
 
       // Fetch target user to make sure they exist
@@ -152,6 +226,7 @@ export class UucsBanCommand {
           durationMinutes,
           platforms,
           evidenceUrls,
+          discordMessageId,
         },
         {
           headers: { 'x-api-secret': process.env.API_SECRET },
@@ -159,18 +234,8 @@ export class UucsBanCommand {
       );
 
       if (response.data.ok) {
-        // Apply Discord action if needed (ban)
-        const targetMember = await guild.members
-          .fetch(targetUserId)
-          .catch(() => null);
-        if (targetMember) {
-          await targetMember.ban({ reason });
-        } else {
-          await guild.bans.create(targetUserId, { reason });
-        }
-
         await interaction.editReply({
-          content: `Successfully issued ${type} for <@${targetUserId}>.`,
+          content: `Successfully issued ${type === 'LIFE_BAN' ? 'perm Ban' : 'ban'} for <@${targetUserId}>.`,
         });
       } else {
         await interaction.editReply({

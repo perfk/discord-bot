@@ -16,18 +16,15 @@ import { PonyBotListener } from '../PonyBot/PonyBot.listener';
 import { ReactionHandler } from './events/reaction.handler';
 import { SessionsModule } from '../sessions/sessions.module';
 
-
 import { OpenUucsCommand } from './commands/uucs/open-uucs.command';
-import { IssueWarningCommand } from './commands/uucs/issue-warning.command';
-import { IssueBanCommand } from './commands/uucs/issue-ban.command';
-import { IssueWarningUserCommand } from './commands/uucs/issue-warning-user.command';
 import { WarnCommand } from './commands/uucs/warn.command';
 import { UucsBanCommand } from './commands/uucs/ban.command';
-import { StartInfractionForumThreadCommand } from './commands/uucs/start-infraction-thread.command';
-import { TimeoutUserCommand } from './commands/uucs/timeout-user.command';
+import { TimeoutCommand } from './commands/uucs/timeout.command';
+import { SpammerBanCommand } from './commands/uucs/spammer-ban.command';
+import { IssueInfractionCommand } from './commands/uucs/issue-infraction.command';
+import { WarnMessageCommand } from './commands/uucs/warn-message.command';
+import { BanMessageCommand } from './commands/uucs/ban-message.command';
 import { TimeoutMessageCommand } from './commands/uucs/timeout-message.command';
-import { SpammerBanUserCommand } from './commands/uucs/spammer-ban-user.command';
-import { SpammerBanMessageCommand } from './commands/uucs/spammer-ban-message.command';
 
 @Module({
   imports: [
@@ -50,16 +47,14 @@ import { SpammerBanMessageCommand } from './commands/uucs/spammer-ban-message.co
     PonyBotListener,
     ReactionHandler,
     OpenUucsCommand,
-    IssueWarningCommand,
-    IssueBanCommand,
-    IssueWarningUserCommand,
     WarnCommand,
     UucsBanCommand,
-    StartInfractionForumThreadCommand,
-    TimeoutUserCommand,
+    TimeoutCommand,
+    SpammerBanCommand,
+    IssueInfractionCommand,
+    WarnMessageCommand,
+    BanMessageCommand,
     TimeoutMessageCommand,
-    SpammerBanUserCommand,
-    SpammerBanMessageCommand,
   ],
 })
 export class BotModule { }

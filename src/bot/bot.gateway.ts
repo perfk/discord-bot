@@ -4,7 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import axios from 'axios';
 
-import { ActionRowBuilder, ActivityType, EmbedBuilder, Interaction, StringSelectMenuBuilder, TextChannel, ModalBuilder, TextInputBuilder, TextInputStyle, ModalActionRowComponentBuilder, ButtonBuilder, ButtonStyle, GuildMember } from 'discord.js';
+import { ActionRowBuilder, ActivityType, EmbedBuilder, Interaction, StringSelectMenuBuilder, TextChannel, ModalBuilder, TextInputBuilder, TextInputStyle, ModalActionRowComponentBuilder, ButtonBuilder, ButtonStyle, GuildMember, ChannelType } from 'discord.js';
 import * as fs from 'fs';
 import { Player, QueryResult } from 'gamedig';
 import * as mongo from 'mongodb';
@@ -41,33 +41,28 @@ export class BotGateway {
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_search_modal_')) {
-      await this.handleUucsSearchModal(interaction);
+    if (interaction.isButton() && interaction.customId && interaction.customId.startsWith('uucs_ticket_btn_')) {
+      await this.handleTicketBtnClick(interaction);
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_direct_')) {
-      await this.handleUucsDirectModal(interaction);
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_ticket_modal_submit_')) {
+      await this.handleTicketModalSubmit(interaction);
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_timeout_modal_')) {
-      await this.handleUucsTimeoutModal(interaction);
+    if (interaction.isButton() && interaction.customId && interaction.customId.startsWith('uucs_ticket_staff_reply_')) {
+      await this.handleTicketStaffReplyBtnClick(interaction);
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_spammer_ban_modal_')) {
-      await this.handleUucsSpammerBanModal(interaction);
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_ticket_staff_reply_modal_submit_')) {
+      await this.handleTicketStaffReplyModalSubmit(interaction);
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_')) {
-      await this.handleUucsModal(interaction);
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('uucs_rule_select_')) {
-      await this.handleUucsRuleSelect(interaction);
+    if (interaction.isButton() && interaction.customId && interaction.customId.startsWith('uucs_ticket_close_')) {
+      await this.handleTicketCloseBtnClick(interaction);
       return;
     }
 
@@ -880,35 +875,77 @@ export class BotGateway {
   }
 
   private async handleAutocomplete(interaction: any): Promise<void> {
-    const focusedValue = interaction.options.getFocused()?.toLowerCase() || '';
+    const focusedOption = interaction.options.getFocused(true);
+    const focusedName = focusedOption.name;
+    const focusedValue = focusedOption.value?.toLowerCase() || '';
 
-    const query: any = { isActive: true };
-    if (focusedValue) {
-      query.$or = [
-        { ruleId: { $regex: focusedValue, $options: 'i' } },
-        { title: { $regex: focusedValue, $options: 'i' } },
-        { description: { $regex: focusedValue, $options: 'i' } },
-      ];
-    }
-
-    const rules = await this.db.collection('rules')
-      .find(query)
-      .sort({ category: 1, order: 1, ruleId: 1 })
-      .limit(25)
-      .toArray();
-
-    const choices = rules.map((rule) => {
-      let name = `[${rule.ruleId}] ${rule.title}`;
-      if (name.length > 100) {
-        name = name.substring(0, 97) + '...';
+    if (focusedName === 'rule') {
+      const query: any = { isActive: true };
+      if (focusedValue) {
+        query.$or = [
+          { ruleId: { $regex: focusedValue, $options: 'i' } },
+          { title: { $regex: focusedValue, $options: 'i' } },
+          { description: { $regex: focusedValue, $options: 'i' } },
+        ];
       }
-      return {
-        name,
-        value: rule.ruleId,
-      };
-    });
 
-    await interaction.respond(choices);
+      const rules = await this.db.collection('rules')
+        .find(query)
+        .sort({ category: 1, order: 1, ruleId: 1 })
+        .limit(25)
+        .toArray();
+
+      const choices = rules.map((rule) => {
+        let name = `[${rule.ruleId}] ${rule.title}`;
+        if (name.length > 100) {
+          name = name.substring(0, 97) + '...';
+        }
+        return {
+          name,
+          value: rule.ruleId,
+        };
+      });
+
+      await interaction.respond(choices);
+    } else if (focusedName === 'duration') {
+      const ruleId = interaction.options.getString('rule');
+      let choices: string[] = [];
+
+      if (ruleId) {
+        const ruleDoc = await this.db.collection('rules').findOne({ ruleId });
+        if (ruleDoc && ruleDoc.punishmentOptions && Array.isArray(ruleDoc.punishmentOptions)) {
+          choices = ruleDoc.punishmentOptions
+            .filter((opt: string) => opt.toLowerCase().trim() !== 'warning')
+            .map((opt: string) => {
+              const lower = opt.toLowerCase().trim();
+              if (
+                lower === 'life_ban' ||
+                lower === 'life ban' ||
+                lower === 'permanent' ||
+                lower === 'permanent ban' ||
+                lower === 'life_blacklist'
+              ) {
+                return 'perm Ban';
+              }
+              return opt;
+            });
+        }
+      }
+
+      if (choices.length === 0) {
+        choices = ['perm Ban', '24 Hours', '1 Week', '2 Weeks', '1 Month', '3 Months', '6 Months'];
+      }
+
+      choices = Array.from(new Set(choices));
+
+      const filtered = choices.filter((choice) =>
+        choice.toLowerCase().includes(focusedValue)
+      );
+
+      await interaction.respond(
+        filtered.slice(0, 25).map((choice) => ({ name: choice, value: choice }))
+      );
+    }
   }
 
   private async handleUucsSearchModal(interaction: any): Promise<void> {
@@ -1422,47 +1459,321 @@ export class BotGateway {
     }
   }
 
-  @Cron(CronExpression.EVERY_MINUTE)
-  async checkExpiredTimeouts(): Promise<void> {
-    const discordClient = this.discordProvider.getClient();
-    const guild = discordClient.guilds.cache.get(process.env.DISCORD_SERVER_ID);
-    if (!guild) return;
+
+
+  private async handleTicketBtnClick(interaction: any): Promise<void> {
+    const customId = interaction.customId;
+    const type = customId.replace('uucs_ticket_btn_', '').toUpperCase(); // 'GM', 'DM', 'AD'
+    const clicker = interaction.user;
+
+    // Check blocks
+    const profile = await this.db.collection('user_profiles').findOne({ discordId: clicker.id });
+    const blocks = profile?.status?.ticketBlocks;
+    const isBlocked = 
+      (type === 'GM' && blocks?.isGMBlocked) ||
+      (type === 'DM' && blocks?.isDMBlocked) ||
+      (type === 'AD' && blocks?.isADBlocked);
+
+    if (isBlocked) {
+      await interaction.reply({
+        content: `❌ You have been blocked from opening new ${type} tickets. Please contact staff if you believe this is in error.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Check open ticket limits
+    const limit = type === 'AD' ? 1 : 3;
+    const activeCount = await this.db.collection('tickets').countDocuments({
+      userId: clicker.id,
+      type: type,
+      status: 'OPEN',
+    });
+
+    if (activeCount >= limit) {
+      await interaction.reply({
+        content: `❌ You already have ${activeCount} open ${type} ticket(s) (limit: ${limit}). Please wait until your open tickets are resolved before opening another.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Show modal
+    const modal = new ModalBuilder()
+      .setCustomId(`uucs_ticket_modal_submit_${type}`)
+      .setTitle(`Contact ${type === 'AD' ? 'Admins' : type === 'GM' ? 'Game Masters' : 'Discord Moderators'}`);
+
+    const nameInput = new TextInputBuilder()
+      .setCustomId('arma_username')
+      .setLabel('Arma / Discord username as seen on server')
+      .setStyle(TextInputStyle.Short)
+      .setValue(interaction.member?.displayName || clicker.username)
+      .setRequired(true);
+
+    const descInput = new TextInputBuilder()
+      .setCustomId('description')
+      .setLabel('What do you need help with?')
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder('Please be as descriptive as possible')
+      .setRequired(true);
+
+    const row1 = new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(nameInput);
+    const row2 = new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(descInput);
+
+    modal.addComponents(row1, row2);
+    await interaction.showModal(modal);
+  }
+
+  private async handleTicketModalSubmit(interaction: any): Promise<void> {
+    const customId = interaction.customId;
+    const type = customId.replace('uucs_ticket_modal_submit_', '').toUpperCase(); // 'GM', 'DM', 'AD'
+    const clicker = interaction.user;
+    const armaUsername = interaction.fields.getTextInputValue('arma_username');
+    const description = interaction.fields.getTextInputValue('description');
+
+    await interaction.deferReply({ ephemeral: true });
 
     try {
+      // 1. Generate sequential ID
+      const count = await this.db.collection('tickets').countDocuments({ type: type });
+      const nextId = String(count + 1).padStart(4, '0');
+      const ticketId = `${type}-${nextId}`;
+
+      // 2. Create private thread in the configured ticket panel channel
+      const guild = interaction.guild;
       const config = await this.db.collection('configs').findOne({});
-      const timeoutRoleId = config?.timeoutRoleId || '1513121726668607649';
-      
-      const expiredTimeouts = await this.db.collection('infractions').find({
-        type: 'TIMEOUT',
-        isVoided: { $ne: true },
-        timeoutRoleRemoved: { $ne: true },
-      }).toArray();
-
-      const now = new Date();
-
-      for (const inf of expiredTimeouts) {
-        const timestamp = new Date(inf.timestamp);
-        const expiresAt = new Date(timestamp.getTime() + inf.durationMinutes * 60000);
-
-        if (expiresAt <= now) {
-          const targetMember = await guild.members.fetch(inf.targetDiscordId).catch(() => null);
-          if (targetMember) {
-            if (targetMember.roles.cache.has(timeoutRoleId)) {
-              await targetMember.roles.remove(timeoutRoleId).catch((err) => {
-                this.logger.error(`Failed to remove timeout role from ${targetMember.user.tag}: ${err.message}`);
-              });
-              this.logger.log(`Automatically removed expired timeout role from ${targetMember.user.tag}`);
-            }
-          }
-          
-          await this.db.collection('infractions').updateOne(
-            { _id: inf._id },
-            { $set: { timeoutRoleRemoved: true, timeoutRoleRemovedAt: new Date() } }
-          );
-        }
+      const targetChannelId = config?.ticketPanelChannelId || '1508148256625131590';
+      const parentChannel = guild.channels.cache.get(targetChannelId) as TextChannel;
+      if (!parentChannel) {
+        await interaction.editReply({ content: '❌ Tickets channel not found. Please contact an Administrator.' });
+        return;
       }
-    } catch (error: any) {
-      this.logger.error(`Error checking expired timeouts: ${error.message}`);
+
+      const prefixMap: Record<string, string> = { GM: 'GM', DM: 'DM', AD: 'AD' };
+      const threadPrefix = prefixMap[type] || type;
+      const threadName = `${threadPrefix}-${nextId}-${clicker.username}`;
+
+      const thread = await parentChannel.threads.create({
+        name: threadName,
+        autoArchiveDuration: 1440,
+        type: ChannelType.PrivateThread,
+        reason: `Ticket ${ticketId} opened by ${clicker.username}`,
+      }).catch(async (err) => {
+        console.error("Private thread creation failed, falling back to public thread:", err);
+        return await parentChannel.threads.create({
+          name: threadName,
+          autoArchiveDuration: 1440,
+          reason: `Ticket ${ticketId} opened by ${clicker.username}`,
+        });
+      });
+
+      await thread.members.add(clicker.id).catch(() => null);
+
+      const roleMap: Record<string, string> = {
+        GM: process.env.DISCORD_REFORGERGM_ROLE_ID || '',
+        DM: process.env.DISCORD_MOD_ROLE_ID || '',
+        AD: process.env.DISCORD_ADMIN_ROLE_ID || ''
+      };
+      const roleId = roleMap[type];
+      const rolePing = roleId ? `<@&${roleId}>` : `@${type}`;
+
+      // 3. Post first message inside thread
+      const embed = new EmbedBuilder()
+        .setTitle(`🎫 Ticket Opened: ${ticketId}`)
+        .setDescription(
+          `**User:** <@${clicker.id}> (${clicker.tag})\n` +
+          `**Arma Username:** ${armaUsername}\n\n` +
+          `**Issue:**\n${description}`
+        )
+        .setColor('#2ea8ff')
+        .setTimestamp();
+
+      if (type === 'GM') {
+        embed.setFooter({
+          text: 'If you are currently IN GAME and playing with us, do not use this option if you need immediate help. Instead write in the game chat.'
+        });
+      }
+
+      const replyBtn = new ButtonBuilder()
+        .setCustomId(`uucs_ticket_staff_reply_${ticketId}`)
+        .setLabel('Staff Reply')
+        .setEmoji('🛡️')
+        .setStyle(ButtonStyle.Primary);
+
+      const closeBtn = new ButtonBuilder()
+        .setCustomId(`uucs_ticket_close_${ticketId}`)
+        .setLabel('Close Ticket')
+        .setEmoji('🔒')
+        .setStyle(ButtonStyle.Danger);
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(replyBtn, closeBtn);
+
+      await thread.send({
+        content: `Welcome <@${clicker.id}>! Staff (${rolePing}) will assist you shortly.`,
+        embeds: [embed],
+        components: [row]
+      });
+
+      // 4. Post ticket info to Next.js API
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+      await axios.post(
+        `${websiteUrl}/api/staff/tickets`,
+        {
+          ticketId,
+          userId: clicker.id,
+          type,
+          threadId: thread.id,
+          modalFields: { armaUsername, description }
+        },
+        {
+          headers: { 'x-api-secret': process.env.API_SECRET },
+          timeout: 10000
+        }
+      );
+
+      await interaction.editReply({
+        content: `✅ Ticket opened! A private thread has been created for you: <#${thread.id}>`,
+      });
+    } catch (err: any) {
+      console.error('Error handling ticket submission:', err);
+      await interaction.editReply({
+        content: `❌ An error occurred: ${err.message}`,
+      });
+    }
+  }
+
+  private async handleTicketStaffReplyBtnClick(interaction: any): Promise<void> {
+    const customId = interaction.customId;
+    const ticketId = customId.replace('uucs_ticket_staff_reply_', '');
+    const member = interaction.member as GuildMember;
+
+    const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID;
+    const gmRoleId = process.env.DISCORD_REFORGERGM_ROLE_ID;
+    
+    const isStaff = member && (
+      member.roles.cache.has(adminRoleId) ||
+      member.roles.cache.has(gmRoleId) ||
+      member.roles.cache.some(r => r.name.toLowerCase().includes('moderator') || r.name.toLowerCase().includes('staff') || r.name.toLowerCase().includes('review'))
+    );
+
+    if (!isStaff) {
+      await interaction.reply({
+        content: '❌ Only staff members are authorized to reply to tickets.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`uucs_ticket_staff_reply_modal_submit_${ticketId}`)
+      .setTitle(`Reply to Ticket: ${ticketId}`);
+
+    const replyInput = new TextInputBuilder()
+      .setCustomId('staff_reply_message')
+      .setLabel('Staff Message')
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder('Type your response here... (Posted anonymously as Staff)')
+      .setRequired(true);
+
+    const row = new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(replyInput);
+    modal.addComponents(row);
+
+    await interaction.showModal(modal);
+  }
+
+  private async handleTicketStaffReplyModalSubmit(interaction: any): Promise<void> {
+    const customId = interaction.customId;
+    const ticketId = customId.replace('uucs_ticket_staff_reply_modal_submit_', '');
+    const clicker = interaction.user;
+    const message = interaction.fields.getTextInputValue('staff_reply_message');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const channel = interaction.channel;
+      if (!channel || !channel.isThread()) {
+        await interaction.editReply({ content: '❌ This action can only be performed inside a thread.' });
+        return;
+      }
+
+      await channel.send({
+        content: `**Staff:** ${message}`
+      });
+
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+      const bestName = interaction.member?.displayName || clicker.username;
+      await axios.post(
+        `${websiteUrl}/api/staff/tickets/reply`,
+        {
+          ticketId,
+          authorDiscordId: clicker.id,
+          authorName: bestName,
+          content: message,
+          isStaff: true,
+          isAnonymous: true
+        },
+        {
+          headers: { 'x-api-secret': process.env.API_SECRET },
+          timeout: 10000
+        }
+      );
+
+      await interaction.editReply({ content: '✅ Reply sent successfully.' });
+    } catch (err: any) {
+      console.error('Error sending staff reply:', err);
+      await interaction.editReply({ content: `❌ Error: ${err.message}` });
+    }
+  }
+
+  private async handleTicketCloseBtnClick(interaction: any): Promise<void> {
+    const customId = interaction.customId;
+    const ticketId = customId.replace('uucs_ticket_close_', '');
+    const clicker = interaction.user;
+    const member = interaction.member as GuildMember;
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const ticket = await this.db.collection('tickets').findOne({ ticketId: ticketId });
+      if (!ticket) {
+        await interaction.editReply({ content: '❌ Ticket not found in UUCS database.' });
+        return;
+      }
+
+      const isOpener = clicker.id === ticket.userId;
+      const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID;
+      const gmRoleId = process.env.DISCORD_REFORGERGM_ROLE_ID;
+      const isStaff = member && (
+        member.roles.cache.has(adminRoleId) ||
+        member.roles.cache.has(gmRoleId) ||
+        member.roles.cache.some(r => r.name.toLowerCase().includes('moderator') || r.name.toLowerCase().includes('staff'))
+      );
+
+      if (!isOpener && !isStaff) {
+        await interaction.editReply({ content: '❌ You do not have permission to close this ticket.' });
+        return;
+      }
+
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+      const bestName = member?.displayName || clicker.username;
+      
+      await axios.post(
+        `${websiteUrl}/api/staff/tickets/resolve`,
+        {
+          ticketId: ticket._id.toString(),
+          resolvedBy: clicker.id,
+          resolvedByName: bestName
+        },
+        {
+          headers: { 'x-api-secret': process.env.API_SECRET },
+          timeout: 10000
+        }
+      );
+
+      await interaction.editReply({ content: '✅ Ticket closed successfully.' });
+    } catch (err: any) {
+      console.error('Error closing ticket:', err);
+      await interaction.editReply({ content: `❌ Error: ${err.message}` });
     }
   }
 }

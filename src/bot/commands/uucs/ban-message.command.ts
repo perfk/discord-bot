@@ -9,12 +9,12 @@ import {
 } from 'discord.js';
 
 @Command({
-  name: 'Timeout user',
+  name: 'Issue Ban',
   type: ApplicationCommandType.Message,
 })
-export class TimeoutMessageCommand {
+export class BanMessageCommand {
   @Handler()
-  async onTimeoutMessage(
+  async onBanMessage(
     @InteractionEvent() interaction: MessageContextMenuCommandInteraction,
   ): Promise<void> {
     if (!interaction.isMessageContextMenuCommand()) return;
@@ -22,16 +22,16 @@ export class TimeoutMessageCommand {
     const member = interaction.member as GuildMember;
     if (!member) return;
 
-    // Permission check: Admin or Discord Moderator roles
+    // Permission check: Admin or Reforger GM roles
     const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID;
-    const isAdmin = member.roles.cache.has(adminRoleId);
-    const isDiscordMod = member.roles.cache.some((r) =>
-      r.name.toLowerCase().includes('moderator'),
-    );
+    const gmRoleId = process.env.DISCORD_REFORGERGM_ROLE_ID;
+    const isBanStaff =
+      member.roles.cache.has(adminRoleId) ||
+      member.roles.cache.has(gmRoleId);
 
-    if (!isAdmin && !isDiscordMod) {
+    if (!isBanStaff) {
       await interaction.reply({
-        content: 'You do not have permission to run this command. (Admins and Discord Moderators only)',
+        content: 'You do not have permission to run this command. (Admins and GMs only)',
         ephemeral: true,
       });
       return;
@@ -51,11 +51,10 @@ export class TimeoutMessageCommand {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 
-    // Timeout command requires reason, so we populate with a placeholder or let them fill it.
-    const commandText = `/timeout user:${targetUser.id} reason: message:${messageUrl}`;
+    const commandText = `/ban user:${targetUser.id} message:${messageUrl}`;
 
     await interaction.reply({
-      content: `### Timeout **${targetUser.username}**\nCopy the command below and paste it in the chat:\n\`\`\`\n${commandText}\n\`\`\``,
+      content: `### Ban **${targetUser.username}**\nCopy the command below and paste it in the chat:\n\`\`\`\n${commandText}\n\`\`\``,
       components: [row],
       ephemeral: true,
     });
