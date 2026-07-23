@@ -64,6 +64,7 @@ export class UucsController {
     const timeoutRoleId = config?.timeoutRoleId || '1513121726668607649';
     const spammerRoleId = config?.spammerRoleId || '1513132881097261107';
     const gameBanRoleId = config?.gameBanRoleId || '1513121256604565605';
+    const discordBanRoleId = config?.discordBanRoleId || '1526203901202927837';
     const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
 
     const discordClient = this.discordProvider.getClient();
@@ -83,15 +84,29 @@ export class UucsController {
       else if (type === 'BLACKLIST') actionText = 'blacklisted';
       else if (type === 'PROBATION_FAILURE') actionText = 'placed on probation failure';
 
-      const targetMention = targetDiscordId ? `Hi <@${targetDiscordId}>, you have` : 'A user has';
-      const description = `${targetMention} been ${actionText} for breaking Rule **${fullRule}**.\n\n**Rules & Standards:** ${websiteUrl}/rules`;
+      const targetMention = targetDiscordId ? `<@${targetDiscordId}>` : 'A user';
+      const hasRule = ruleId && ruleId !== 'TIMEOUT';
+      const platforms: string[] = body.platforms || [];
+      const isArmaBanMsg = platforms.includes('ARMA') && !platforms.includes('DISCORD');
+      const isDiscordBanMsg = platforms.includes('DISCORD') && !platforms.includes('ARMA');
+      let banLocation = '';
+      if (type === 'BAN' || type === 'LIFE_BAN') {
+        if (isArmaBanMsg) banLocation = ' from the game server';
+        else if (isDiscordBanMsg) banLocation = ' from the Discord server';
+        else if (platforms.length > 0) banLocation = ' from the Discord server and game server';
+      }
+      const description = hasRule
+        ? `${targetMention} has been ${actionText}${banLocation} for breaking Rule **${fullRule}**.\n\n**Rules & Standards:** ${websiteUrl}/rules`
+        : `${targetMention} has been ${actionText}${banLocation}.`;
 
       const embed = new EmbedBuilder()
         .setTitle(`🛑 Infraction Issued`)
         .setDescription(description)
         .setColor(type.includes('BAN') || type === 'TIMEOUT' ? COLOR_ERROR : COLOR_OK);
 
-      embed.addFields({ name: 'Staff Remarks', value: reason || 'No remarks provided' });
+      if (reason) {
+        embed.addFields({ name: 'Staff Remarks', value: reason });
+      }
 
       if (durationMinutes) {
         embed.addFields({ name: 'Duration', value: formatDurationRaw(durationMinutes), inline: true });
@@ -145,7 +160,8 @@ export class UucsController {
           const targetUser = targetMember.user;
           const actionWord = type === 'WARNING' ? 'issued a warning with a timeout' : 'timed out';
           const durationText = formatDurationRaw(durationMinutes);
-          let dmContent = `You have been ${actionWord} on Global Conflicts.\n\n**Rule Broken:** ${fullRule}\n**Reason:** ${reason || 'No remarks provided'}\n**Duration:** ${durationText}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules`;
+          const ruleText = hasRule ? `**Rule Broken:** ${fullRule}\n` : '';
+          let dmContent = `You have been ${actionWord} on Global Conflicts.\n\n${ruleText}**Reason:** ${reason || 'No reason provided'}\n**Duration:** ${durationText}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules`;
           const dmOptions: any = { content: dmContent };
 
           if (durationMinutes === 1440) {
@@ -163,13 +179,26 @@ export class UucsController {
           await targetMember.roles.add(spammerRoleId).catch(err => console.error("Failed to add Spammer role:", err));
           // No appeal DM is sent to the spammer!
         } else if (isBan && !isTOS) {
-          await targetMember.roles.add(gameBanRoleId).catch(err => console.error("Failed to add Game Ban role:", err));
-          
+          const platforms: string[] = body.platforms || [];
+          const isArmaBan = platforms.includes('ARMA') || platforms.includes('BOTH');
+          const isDiscordBan = platforms.includes('DISCORD') || platforms.includes('BOTH');
+
+          if (isArmaBan) {
+            await targetMember.roles.add(gameBanRoleId).catch(err => console.error("Failed to add Game Ban role:", err));
+          }
+          if (isDiscordBan) {
+            await targetMember.roles.add(discordBanRoleId).catch(err => console.error("Failed to add Banned role:", err));
+          }
+
           // Send appeal DM
           const targetUser = targetMember.user;
           const durationText = durationMinutes ? `for ${formatDurationRaw(durationMinutes)}` : 'permanently';
-          const dmContent = `You have been banned ${durationText} from the Global Conflicts game server.\n\n**Rule Broken:** ${fullRule}\n**Reason:** ${reason || 'No remarks provided'}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules\n\nYou can appeal this ban by clicking the button below.`;
-          
+          let banFromText = 'Global Conflicts';
+          if (isArmaBan && !isDiscordBan) banFromText = 'the Global Conflicts game server';
+          else if (isDiscordBan && !isArmaBan) banFromText = 'the Global Conflicts Discord server';
+          else banFromText = 'the Global Conflicts Discord server and game server';
+          const dmContent = `You have been banned ${durationText} from ${banFromText}.\n\n**Rule Broken:** ${fullRule}\n**Reason:** ${reason || 'No remarks provided'}.\n\nYou can review our community rules and standards here: ${websiteUrl}/rules\n\nYou can appeal this ban by clicking the button below.`;
+
           const appealButton = new ButtonBuilder()
             .setLabel('Appeal Ban')
             .setStyle(ButtonStyle.Link)
@@ -180,9 +209,9 @@ export class UucsController {
       }
 
       const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID;
-      let content = targetDiscordId ? `<@${targetDiscordId}>` : undefined;
+      let content: string | undefined = undefined;
       if (isTOS && adminRoleId) {
-        content = content ? `${content} <@&${adminRoleId}>` : `<@&${adminRoleId}>`;
+        content = targetDiscordId ? `<@${targetDiscordId}> <@&${adminRoleId}>` : `<@&${adminRoleId}>`;
       }
       const sentMessage = await warningsChannel.send({ content, embeds: [embed] });
       return { ok: true, messageId: sentMessage.id, channelId: warningsChannel.id };
@@ -226,16 +255,18 @@ export class UucsController {
       else if (type === 'BLACKLIST') actionText = 'blacklisted';
       else if (type === 'PROBATION_FAILURE') actionText = 'placed on probation failure';
 
-      const targetMention = targetDiscordId ? `Hi <@${targetDiscordId}>, you have` : 'A user has';
+      const targetMention = targetDiscordId ? `<@${targetDiscordId}>` : 'A user';
       const fullRule = ruleTitle ? `${ruleId}: ${ruleTitle}` : ruleId;
-      const description = `${targetMention} been ${actionText} for breaking Rule **${fullRule}**.`;
+      const description = `${targetMention} has been ${actionText} for breaking Rule **${fullRule}**.`;
 
       const embed = new EmbedBuilder()
         .setTitle(`🛑 Infraction Issued`)
         .setDescription(description)
         .setColor(type.includes('BAN') ? COLOR_ERROR : COLOR_OK);
 
-      embed.addFields({ name: 'Staff Remarks', value: reason || 'No remarks provided' });
+      if (reason) {
+        embed.addFields({ name: 'Staff Remarks', value: reason });
+      }
 
       if (durationMinutes) {
         embed.addFields({ name: 'Duration', value: `${durationMinutes / 60} Hours`, inline: true });
@@ -291,6 +322,44 @@ export class UucsController {
       console.error('Error deleting Discord warning message:', error);
       return { ok: false, error: error.message };
     }
+  }
+
+  @Post('/infraction/remove-ban-role')
+  async removeBanRole(
+    @Body() body: any,
+    @Headers('x-api-secret') apiSecret: string,
+  ): Promise<object> {
+    if (!process.env.API_SECRET || apiSecret !== process.env.API_SECRET) {
+      throw new UnauthorizedException('Invalid API Secret');
+    }
+
+    const { discordId, platforms } = body;
+    if (!discordId || !Array.isArray(platforms)) {
+      return { ok: false, error: 'Missing discordId or platforms' };
+    }
+
+    const config = await this.db.collection('configs').findOne({});
+    const gameBanRoleId = config?.gameBanRoleId || '1513121256604565605';
+    const discordBanRoleId = config?.discordBanRoleId || '1526203901202927837';
+
+    const discordClient = this.discordProvider.getClient();
+    const guild = discordClient.guilds.cache.get(process.env.DISCORD_SERVER_ID);
+    if (!guild) return { ok: false, error: 'Guild not found' };
+
+    const member = await guild.members.fetch(discordId).catch(() => null);
+    if (!member) return { ok: true, note: 'Member not in guild, no role to remove' };
+
+    const isArmaBan = platforms.includes('ARMA') || platforms.includes('BOTH');
+    const isDiscordBan = platforms.includes('DISCORD') || platforms.includes('BOTH');
+
+    if (isArmaBan) {
+      await member.roles.remove(gameBanRoleId).catch(err => console.error("Failed to remove Game Ban role:", err));
+    }
+    if (isDiscordBan) {
+      await member.roles.remove(discordBanRoleId).catch(err => console.error("Failed to remove Banned role:", err));
+    }
+
+    return { ok: true };
   }
 
   @Post('/infraction/escalate')
@@ -454,91 +523,6 @@ export class UucsController {
       return { ok: true, syncedCount };
     } catch (error) {
       console.error('Member Sync Error:', error);
-      return { ok: false, error: error.message };
-    }
-  }  @Post('/message-context')
-  async getMessageContext(
-    @Body() body: { messageInput: string; limit?: number },
-    @Headers('x-api-secret') apiSecret: string,
-  ): Promise<object> {
-    if (!process.env.API_SECRET || apiSecret !== process.env.API_SECRET) {
-      throw new UnauthorizedException('Invalid API Secret');
-    }
-
-    const { messageInput, limit = 10 } = body;
-    if (!messageInput) return { ok: false, error: 'Missing messageInput' };
-
-    let channelId = null;
-    let messageId = null;
-
-    const match = messageInput.match(/channels\/\d+\/(\d+)\/(\d+)/);
-    if (match) {
-      channelId = match[1];
-      messageId = match[2];
-    } else {
-      messageId = messageInput.trim();
-    }
-
-    const discordClient = this.discordProvider.getClient();
-    const guild = discordClient.guilds.cache.get(process.env.DISCORD_SERVER_ID);
-    if (!guild) return { ok: false, error: 'Guild not found' };
-
-    let channel: any = null;
-    let targetMsg = null;
-
-    try {
-      if (channelId) {
-        channel = guild.channels.cache.get(channelId);
-        if (channel && channel.isTextBased()) {
-          targetMsg = await channel.messages.fetch(messageId).catch(() => null);
-        }
-      } else {
-        for (const ch of guild.channels.cache.values()) {
-          if (ch.isTextBased()) {
-            targetMsg = await ch.messages.fetch(messageId).catch(() => null);
-            if (targetMsg) {
-              channel = ch;
-              break;
-            }
-          }
-        }
-      }
-
-      if (!targetMsg || !channel) {
-        return { ok: false, error: 'Message not found in any visible text channel.' };
-      }
-
-      const limitBefore = Math.max(0, limit - 1);
-      const contextMessagesCollection = limitBefore > 0
-        ? await channel.messages.fetch({ limit: limitBefore, before: messageId }).catch(() => null)
-        : null;
-
-      const contextMsgs = contextMessagesCollection
-        ? Array.from(contextMessagesCollection.values())
-            .reverse()
-            .map((msg: any) => ({
-              author: msg.author.tag,
-              authorId: msg.author.id,
-              content: msg.content || '',
-              timestamp: msg.createdAt.toISOString(),
-            }))
-        : [];
-
-      return {
-        ok: true,
-        messageUrl: `https://discord.com/channels/${guild.id}/${channel.id}/${messageId}`,
-        discordContext: {
-          targetMessage: {
-            author: targetMsg.author.tag,
-            authorId: targetMsg.author.id,
-            content: targetMsg.content || '',
-            timestamp: targetMsg.createdAt.toISOString(),
-          },
-          contextMessages: contextMsgs,
-        }
-      };
-    } catch (error) {
-      console.error('Error fetching message context:', error);
       return { ok: false, error: error.message };
     }
   }
@@ -758,12 +742,11 @@ export class UucsController {
         .setEmoji('⚙️')
         .setStyle(ButtonStyle.Secondary);
 
-      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
       const appealButton = new ButtonBuilder()
+        .setCustomId('uucs_appeal_btn')
         .setLabel(appealLabel)
-        .setEmoji('🔗')
-        .setStyle(ButtonStyle.Link)
-        .setURL(`${websiteUrl}/user/appeals`);
+        .setEmoji('📋')
+        .setStyle(ButtonStyle.Secondary);
 
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(dmButton, gmButton, adButton, appealButton);
 
@@ -771,6 +754,110 @@ export class UucsController {
       return { ok: true };
     } catch (error: any) {
       return { ok: false, error: error.message };
+    }
+  }
+
+  @Post('/message-context')
+  async getMessageContext(
+    @Body() body: { messageUrl: string; contextSize?: number },
+    @Headers('x-api-secret') apiSecret: string,
+  ): Promise<object> {
+    if (!process.env.API_SECRET || apiSecret !== process.env.API_SECRET) {
+      throw new UnauthorizedException('Invalid API Secret');
+    }
+
+    const { messageUrl, contextSize = 10 } = body;
+
+    const match = messageUrl?.match(/channels\/(\d+)\/(\d+)\/(\d+)/);
+    if (!match) {
+      return { ok: false, error: 'Invalid Discord message URL. Expected: https://discord.com/channels/guildId/channelId/messageId' };
+    }
+    const [, , channelId, messageId] = match;
+
+    const client = this.discordProvider.getClient();
+    try {
+      const channel = await client.channels.fetch(channelId).catch(() => null) as TextChannel;
+      if (!channel || !('messages' in channel)) {
+        return { ok: false, error: 'Channel not found or not a text channel' };
+      }
+
+      const targetMsg = await channel.messages.fetch(messageId).catch(() => null);
+      if (!targetMsg) return { ok: false, error: 'Message not found' };
+
+      const before = await channel.messages.fetch({ before: messageId, limit: Math.min(Number(contextSize) || 10, 50) });
+
+      const fmt = (msg: any) => ({
+        id: msg.id,
+        content: msg.content || '',
+        author: {
+          id: msg.author.id,
+          username: msg.author.username,
+          displayName: msg.member?.displayName || msg.author.displayName || msg.author.username,
+          avatarUrl: msg.author.displayAvatarURL({ size: 32 }),
+        },
+        createdAt: msg.createdAt.toISOString(),
+        attachments: msg.attachments.map((a: any) => a.url),
+      });
+
+      return {
+        ok: true,
+        targetMessage: fmt(targetMsg),
+        contextMessages: [...before.values()]
+          .map(fmt)
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+      };
+    } catch (err: any) {
+      return { ok: false, error: err.message };
+    }
+  }
+
+  @Post('/appeal/resolve-thread')
+  async resolveAppealThread(
+    @Body() body: any,
+    @Headers('x-api-secret') secret: string,
+  ) {
+    if (!process.env.API_SECRET || secret !== process.env.API_SECRET) {
+      throw new UnauthorizedException();
+    }
+
+    const { threadId, status, staffName, canReappealAt } = body;
+    if (!threadId || !status) {
+      return { ok: false, error: 'Missing threadId or status' };
+    }
+
+    try {
+      const discordClient = this.discordProvider.getClient();
+      const thread = await discordClient.channels.fetch(threadId).catch(() => null) as any;
+
+      if (!thread) return { ok: false, error: 'Thread not found' };
+
+      const deniedDescription = canReappealAt
+        ? `The infraction stands. Please review the community rules. A new appeal can be made on **${new Date(canReappealAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}**.`
+        : 'The infraction stands. Please review the community rules.';
+
+      const statusMessages: Record<string, { label: string; color: number; description: string }> = {
+        APPROVED:             { label: '✅ Appeal Approved',            color: 0x2ecc71, description: 'The infraction has been voided.' },
+        APPROVED_MISTAKE:     { label: '✅ Approved — Staff Mistake',   color: 0x2ecc71, description: 'The infraction has been marked as a staff error and is now ignored for escalation purposes.' },
+        APPROVED_TIME_SERVED: { label: '✅ Approved — Time Served',     color: 0xf39c12, description: 'The appeal was accepted. The infraction remains on record but the ban duration has been cleared.' },
+        DENIED:               { label: '❌ Appeal Denied',              color: 0xe74c3c, description: deniedDescription },
+      };
+
+      const meta = statusMessages[status] ?? { label: status, color: 0x95a5a6, description: '' };
+
+      const embed = new EmbedBuilder()
+        .setTitle(meta.label)
+        .setDescription(meta.description + (staffName ? `\n\n*Resolved by ${staffName}*` : ''))
+        .setColor(meta.color)
+        .setTimestamp();
+
+      await thread.send({ embeds: [embed] });
+      await thread.setLocked(true, `Appeal resolved: ${status}`);
+      await thread.setArchived(true, `Appeal resolved: ${status}`);
+
+      return { ok: true };
+    } catch (err: any) {
+      console.error('Error resolving appeal thread:', err);
+      return { ok: false, error: err.message };
     }
   }
 }

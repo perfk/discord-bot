@@ -19,18 +19,18 @@ class SpammerBanSlashCommandParams {
   user: string;
 
   @Param({
-    description: 'Reason / Remarks for the spammer ban',
+    description: 'Staff remarks / reason for the spammer ban',
     required: true,
     type: ParamType.STRING,
   })
-  reason: string;
+  staff_remarks: string;
 
   @Param({
-    description: 'Message Link or ID to associate with this spammer ban as evidence',
+    description: 'Discord message link or ID to associate with this spammer ban as evidence',
     required: false,
     type: ParamType.STRING,
   })
-  message?: string;
+  message_link?: string;
 }
 
 @Command({
@@ -74,20 +74,20 @@ export class SpammerBanCommand {
 
     try {
       const targetUserId = options.user;
-      const reason = options.reason;
+      const reason = options.staff_remarks;
 
       const evidenceUrls: string[] = [];
 
       let discordMessageId = null;
-      if (options.message) {
+      if (options.message_link) {
         let channelId = null;
         let messageId = null;
-        const match = options.message.match(/channels\/\d+\/(\d+)\/(\d+)/);
+        const match = options.message_link.match(/channels\/\d+\/(\d+)\/(\d+)/);
         if (match) {
           channelId = match[1];
           messageId = match[2];
         } else {
-          messageId = options.message.trim();
+          messageId = options.message_link.trim();
         }
 
         discordMessageId = messageId;

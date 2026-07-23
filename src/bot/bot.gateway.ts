@@ -66,6 +66,31 @@ export class BotGateway {
       return;
     }
 
+    if (interaction.isButton() && interaction.customId === 'uucs_appeal_btn') {
+      await this.handleAppealBtnClick(interaction);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'uucs_appeal_modal_submit') {
+      await this.handleAppealModalSubmit(interaction);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId && interaction.customId.startsWith('uucs_appeal_infraction_')) {
+      await this.handleAppealInfractionSelect(interaction);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId && interaction.customId.startsWith('uucs_appeal_link_btn_')) {
+      await this.handleAppealLinkAccount(interaction);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('uucs_appeal_link_modal_')) {
+      await this.handleAppealLinkModalSubmit(interaction);
+      return;
+    }
+
     if (interaction.channelId == process.env.DISCORD_VOTING_CHANNEL) {
       if (!interaction.isButton()) return;
 
@@ -1774,6 +1799,547 @@ export class BotGateway {
     } catch (err: any) {
       console.error('Error closing ticket:', err);
       await interaction.editReply({ content: `❌ Error: ${err.message}` });
+    }
+  }
+
+  private getActiveBan(infractions: any[]): any | null {
+    const now = Date.now();
+    return infractions.find((inf: any) => {
+      if (inf.isVoided || inf.isIgnored) return false;
+      if (!['BAN', 'LIFE_BAN', 'BLACKLIST'].includes(inf.type)) return false;
+      if (inf.type === 'LIFE_BAN' || inf.type === 'BLACKLIST') return true;
+      if (!inf.durationMinutes) return false;
+      return new Date(inf.timestamp).getTime() + inf.durationMinutes * 60000 > now;
+    }) ?? null;
+  }
+
+  private async handleAppealBtnClick(interaction: any): Promise<void> {
+    const clicker = interaction.user;
+
+    try {
+      // Already has a pending appeal with a thread
+      const existingPending = await this.db.collection('infractions').findOne({
+        targetDiscordId: clicker.id,
+        appealStatus: 'PENDING',
+        appealThreadId: { $exists: true, $ne: null },
+      });
+
+      if (existingPending) {
+        const threadLink = existingPending.appealThreadUrl
+          ? `\n<${existingPending.appealThreadUrl}>`
+          : existingPending.appealThreadId ? ` in thread <#${existingPending.appealThreadId}>` : '';
+        await interaction.reply({
+          content: `⚠️ You already have a pending appeal. Please wait for staff to review it before opening a new one.${threadLink}`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const config = await this.db.collection('configs').findOne({});
+      const cooldownDays: number = config?.appealCooldownDays ?? 90;
+      const cooldownMs = cooldownDays * 86400000;
+
+      // Check if this Discord user has a linked UUCS profile
+      const uucsUser = await this.db.collection('users').findOne({ discordId: clicker.id });
+      const isLinkedToUucs = !!uucsUser;
+
+      const allInfractions = await this.db.collection('infractions').find({
+        targetDiscordId: clicker.id,
+        isVoided: { $ne: true },
+        isIgnored: { $ne: true },
+      }).sort({ timestamp: -1 }).toArray();
+
+      const activeBan = this.getActiveBan(allInfractions);
+
+      if (activeBan) {
+        // Check denial cooldown — only applies when user has an active ban
+        const recentlyDenied = allInfractions.find((inf: any) =>
+          inf.appealStatus === 'DENIED' &&
+          inf.appealUpdatedAt &&
+          new Date(inf.appealUpdatedAt).getTime() > Date.now() - cooldownMs
+        );
+
+        if (recentlyDenied) {
+          const cooldownEnd = new Date(new Date(recentlyDenied.appealUpdatedAt).getTime() + cooldownMs);
+          const fmt = (d: Date) => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+          let banExpiresAt: Date | null = null;
+          if (activeBan.durationMinutes) {
+            banExpiresAt = new Date(new Date(activeBan.timestamp).getTime() + activeBan.durationMinutes * 60000);
+          }
+
+          const unlockMsg = banExpiresAt && banExpiresAt < cooldownEnd
+            ? `Your ban expires on **${fmt(banExpiresAt)}**, at which point you may reappeal.`
+            : `You may reappeal after **${fmt(cooldownEnd)}** (${cooldownDays}-day cooldown).`;
+
+          await interaction.reply({
+            content: `⏳ Your previous appeal was denied. ${unlockMsg}`,
+            ephemeral: true,
+          });
+          return;
+        }
+      }
+
+      // For linked UUCS users, check there is at least one appealable infraction
+      if (isLinkedToUucs && allInfractions.length > 0) {
+        const hasAppealable = allInfractions.some(
+          (inf: any) => !inf.appealStatus || inf.appealStatus === 'NONE'
+        );
+        if (!hasAppealable) {
+          await interaction.reply({
+            content: `ℹ️ All your infractions have already been reviewed or appealed.`,
+            ephemeral: true,
+          });
+          return;
+        }
+      }
+
+      // Unlinked users (not in UUCS) are allowed through — staff will investigate
+      const modal = new ModalBuilder()
+        .setCustomId('uucs_appeal_modal_submit')
+        .setTitle('Submit an Appeal');
+
+      const armaNameInput = new TextInputBuilder()
+        .setCustomId('arma_username')
+        .setLabel('Arma username (if different from Discord)')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Leave blank if same as your Discord username')
+        .setRequired(false);
+
+      const messageInput = new TextInputBuilder()
+        .setCustomId('appeal_message')
+        .setLabel('Your appeal statement')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Explain your situation and include any relevant context or evidence.')
+        .setRequired(true)
+        .setMaxLength(1500);
+
+      modal.addComponents(
+        new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(armaNameInput),
+        new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(messageInput),
+      );
+      await interaction.showModal(modal);
+    } catch (err: any) {
+      console.error('Error handling appeal button click:', err);
+      try {
+        await interaction.reply({ content: `❌ An error occurred: ${err.message}`, ephemeral: true });
+      } catch (_) { /* interaction may already be replied to */ }
+    }
+  }
+
+  private async handleAppealModalSubmit(interaction: any): Promise<void> {
+    const clicker = interaction.user;
+    const armaUsername = interaction.fields.getTextInputValue('arma_username')?.trim() || null;
+    const appealMessage = interaction.fields.getTextInputValue('appeal_message');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const guild = interaction.guild;
+      const config = await this.db.collection('configs').findOne({});
+      const targetChannelId = config?.ticketPanelChannelId || '1508148256625131590';
+      const parentChannel = guild.channels.cache.get(targetChannelId) as TextChannel;
+
+      if (!parentChannel) {
+        await interaction.editReply({ content: '❌ Appeals channel not found. Please contact an Administrator.' });
+        return;
+      }
+
+      // Check if this Discord user has a linked UUCS profile
+      const uucsUser = await this.db.collection('users').findOne({ discordId: clicker.id });
+      const isLinkedToUucs = !!uucsUser;
+
+      // All non-voided, non-ignored infractions for this Discord user
+      const allInfractions = await this.db.collection('infractions').find({
+        targetDiscordId: clicker.id,
+        isVoided: { $ne: true },
+        isIgnored: { $ne: true },
+      }).sort({ timestamp: -1 }).toArray();
+
+      const activeBan = this.getActiveBan(allInfractions);
+
+      // Create private thread
+      const threadName = `APPEAL-${clicker.username}`;
+      const thread = await parentChannel.threads.create({
+        name: threadName,
+        autoArchiveDuration: 10080,
+        type: ChannelType.PrivateThread,
+        reason: `Appeal opened by ${clicker.username}`,
+      }).catch(async (err) => {
+        console.error('Private thread creation failed, falling back to public:', err);
+        return parentChannel.threads.create({
+          name: threadName,
+          autoArchiveDuration: 10080,
+          reason: `Appeal opened by ${clicker.username}`,
+        });
+      });
+
+      await thread.members.add(clicker.id).catch(() => null);
+
+      const modRoleId = config?.appealModRoleId || process.env.DISCORD_MOD_ROLE_ID || '';
+      const gmRoleId = config?.appealGmRoleId || process.env.DISCORD_REFORGERGM_ROLE_ID || '';
+      const adminRoleId = config?.appealAdminRoleId || process.env.DISCORD_ADMIN_ROLE_ID || '';
+      const notifyMode: string = config?.appealNotifyRoles ?? 'both';
+      const staffParts: string[] = [];
+      if (notifyMode === 'both' || notifyMode === 'staff_only') {
+        if (modRoleId) staffParts.push(`<@&${modRoleId}>`);
+        if (gmRoleId) staffParts.push(`<@&${gmRoleId}>`);
+      }
+      if (notifyMode === 'both' || notifyMode === 'admins_only') {
+        if (adminRoleId) staffParts.push(`<@&${adminRoleId}>`);
+      }
+      const staffPing = staffParts.join(' ');
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+      const threadUrl = `https://discord.com/channels/${guild.id}/${thread.id}`;
+
+      const fmtDate = (d: any) => d
+        ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+        : '?';
+
+      const fmtInfraction = (inf: any, highlight = false): string => {
+        const date = fmtDate(inf.timestamp);
+        const duration = inf.durationMinutes
+          ? `${inf.durationMinutes / 60}h`
+          : (inf.type === 'LIFE_BAN' || inf.type === 'BLACKLIST' ? 'Permanent' : '–');
+        const rule = inf.ruleId || 'No rule';
+        const statusTag = inf.appealStatus && inf.appealStatus !== 'NONE' ? ` [${inf.appealStatus}]` : '';
+        if (highlight) return `🔴 **${inf.type} — ${rule} | ${date} | ${duration}** ← appealing`;
+        return `${inf.type} — ${rule} | ${date} | ${duration}${statusTag}`;
+      };
+
+      const websiteUserUrl = `${websiteUrl}/dashboard/staff/users?q=${clicker.id}`;
+
+      // ── Case 1: Unlinked user — no UUCS profile found ──
+      if (!isLinkedToUucs) {
+        const embed = new EmbedBuilder()
+          .setTitle(`📋 Appeal: ${clicker.username}`)
+          .setDescription(
+            `**User:** <@${clicker.id}>` +
+            (armaUsername ? ` | **Arma name:** ${armaUsername}` : '') +
+            `\n\n**Statement:**\n${appealMessage}` +
+            `\n\n⚠️ **This Discord account has no linked UUCS profile.**\nStaff must verify the user's identity and link their account before this appeal can be processed.`
+          )
+          .setColor('#e67e22')
+          .setTimestamp();
+
+        const linkBtn = new ButtonBuilder()
+          .setCustomId(`uucs_appeal_link_btn_${clicker.id}`)
+          .setLabel('🔗 Link to UUCS Profile')
+          .setStyle(ButtonStyle.Secondary);
+
+        await thread.send({
+          content: `<@${clicker.id}>\n${staffPing} — new appeal from **unlinked** user.`,
+          embeds: [embed],
+          components: [new ActionRowBuilder<ButtonBuilder>().addComponents(linkBtn)],
+        });
+
+        await interaction.editReply({
+          content: `✅ Appeal thread created: <#${thread.id}>\n\nStaff will contact you to verify your identity.`,
+        });
+        return;
+      }
+
+      // ── Case 2: Active ban — auto-target it ──
+      if (activeBan) {
+        // Look up rule details for the active ban
+        const ruleDoc = await this.db.collection('rules').findOne({ ruleId: activeBan.ruleId });
+        const ruleTitle = ruleDoc?.title || activeBan.ruleId || 'Unknown Rule';
+
+        const banDate = fmtDate(activeBan.timestamp);
+        const banDuration = activeBan.type === 'LIFE_BAN' || activeBan.type === 'BLACKLIST'
+          ? 'Permanent'
+          : activeBan.durationMinutes
+            ? `${Math.round(activeBan.durationMinutes / 60 / 24)} day(s)`
+            : '–';
+
+        let banExpiryLine = '';
+        if (activeBan.durationMinutes && activeBan.type === 'BAN') {
+          const expiryDate = new Date(new Date(activeBan.timestamp).getTime() + activeBan.durationMinutes * 60000);
+          banExpiryLine = `\n**Expires:** ${fmtDate(expiryDate)}`;
+        }
+
+        const banNotesLine = activeBan.notes ? `\n**Reason:** ${activeBan.notes}` : '';
+        const banIssuedLine = activeBan.issuedByNickname ? `\n**Issued by:** ${activeBan.issuedByNickname}` : '';
+
+        const infractionLines = allInfractions.map((inf: any) =>
+          fmtInfraction(inf, inf._id.toString() === activeBan._id.toString())
+        ).join('\n');
+
+        const infractionId = activeBan._id.toString();
+        const appealsUrl = `${websiteUrl}/dashboard?openAppeal=${infractionId}`;
+
+        const embed = new EmbedBuilder()
+          .setTitle(`📋 Appeal: ${clicker.username}`)
+          .setDescription(
+            `**User:** <@${clicker.id}>` +
+            (armaUsername ? ` | **Arma name:** ${armaUsername}` : '') +
+            `\n\n**Statement:**\n${appealMessage}` +
+            `\n\n**Active Ban Details:**` +
+            `\n**Rule:** ${ruleTitle} (${activeBan.ruleId ?? '–'})` +
+            `\n**Type:** ${activeBan.type} | **Issued:** ${banDate} | **Duration:** ${banDuration}` +
+            banExpiryLine + banNotesLine + banIssuedLine +
+            `\n\n**Full Infraction History:**\n${infractionLines}` +
+            `\n\n[UUCS User](${websiteUserUrl}) · [UUCS Appeals](${appealsUrl})`
+          )
+          .setColor('#e74c3c')
+          .setTimestamp();
+
+        await thread.send({
+          content: `<@${clicker.id}>\n${staffPing} — new appeal received.`,
+          embeds: [embed],
+        });
+
+        // Immediately link the active ban to this thread
+        await axios.post(
+          `${websiteUrl}/api/staff/infractions/appeal-thread`,
+          { infractionId, threadId: thread.id, guildId: guild.id, threadUrl },
+          { headers: { 'x-api-secret': process.env.API_SECRET }, timeout: 10000 }
+        );
+
+        await interaction.editReply({
+          content: `✅ Appeal thread created: <#${thread.id}>\n\nYour active ban has been submitted for review. Staff will be in touch.`,
+        });
+        return;
+      }
+
+      // ── Case 3: No active ban — user picks infraction ──
+      const appealable = allInfractions.filter(
+        (inf: any) => !inf.appealStatus || inf.appealStatus === 'NONE'
+      );
+
+      let appealableIdx = 0;
+      const infractionLines = allInfractions.map((inf: any) => {
+        const isAppealable = !inf.appealStatus || inf.appealStatus === 'NONE';
+        if (isAppealable) {
+          appealableIdx++;
+          return `**[${appealableIdx}]** ${fmtInfraction(inf)}`;
+        }
+        return `~~${fmtInfraction(inf)}~~`;
+      }).join('\n');
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📋 Appeal: ${clicker.username}`)
+        .setDescription(
+          `**User:** <@${clicker.id}>` +
+          (armaUsername ? ` | **Arma name:** ${armaUsername}` : '') +
+          `\n\n**Statement:**\n${appealMessage}` +
+          `\n\n**Infraction History:**\n${infractionLines}` +
+          `\n\n[UUCS User](${websiteUserUrl})`
+        )
+        .setColor('#e74c3c')
+        .setTimestamp();
+
+      const buttons: ButtonBuilder[] = appealable.map((inf: any, i: number) =>
+        new ButtonBuilder()
+          .setCustomId(`uucs_appeal_infraction_${inf._id.toString()}`)
+          .setLabel(`${i + 1}`)
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const buttonRows: ActionRowBuilder<ButtonBuilder>[] = [];
+      for (let i = 0; i < buttons.length; i += 5) {
+        buttonRows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5)));
+      }
+
+      await thread.send({
+        content: `<@${clicker.id}> — please click the number of the infraction you wish to appeal.\n${staffPing} — new appeal received.`,
+        embeds: [embed],
+        components: buttonRows,
+      });
+
+      await interaction.editReply({
+        content: `✅ Appeal thread created: <#${thread.id}>\n\nPlease go to the thread and click the number of the infraction you wish to appeal.`,
+      });
+    } catch (err: any) {
+      console.error('Error handling appeal modal submit:', err);
+      await interaction.editReply({ content: `❌ An error occurred: ${err.message}` });
+    }
+  }
+
+  private async handleAppealInfractionSelect(interaction: any): Promise<void> {
+    const infractionId = interaction.customId.replace('uucs_appeal_infraction_', '');
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const guild = interaction.guild;
+      const threadId = interaction.channelId;
+      const threadUrl = `https://discord.com/channels/${guild.id}/${threadId}`;
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+
+      const { ObjectId } = await import('mongodb');
+      const infraction = await this.db.collection('infractions').findOne(
+        { _id: new ObjectId(infractionId) }
+      );
+
+      await axios.post(
+        `${websiteUrl}/api/staff/infractions/appeal-thread`,
+        { infractionId, threadId, guildId: guild.id, threadUrl },
+        { headers: { 'x-api-secret': process.env.API_SECRET }, timeout: 10000 }
+      );
+
+      // Update the original message — add links + footer, remove buttons
+      try {
+        const originalEmbed = interaction.message.embeds[0];
+        const date = infraction?.timestamp
+          ? new Date(infraction.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+          : '?';
+        const duration = infraction?.durationMinutes
+          ? `${infraction.durationMinutes / 60}h`
+          : (infraction?.type === 'LIFE_BAN' || infraction?.type === 'BLACKLIST' ? 'Permanent' : '–');
+
+        const clickerDiscordId = infraction?.targetDiscordId || '';
+        const uucsUserUrl = clickerDiscordId
+          ? `${websiteUrl}/dashboard/staff/users?q=${clickerDiscordId}`
+          : `${websiteUrl}/dashboard/staff/users`;
+        const appealsUrl = `${websiteUrl}/dashboard?openAppeal=${infractionId}`;
+
+        const existingDesc = originalEmbed.description || '';
+        const updatedDesc = existingDesc.replace(/\[UUCS User\]\([^)]+\)$/, '')
+          + `\n[UUCS User](${uucsUserUrl}) · [UUCS Appeals](${appealsUrl})`;
+
+        const updatedEmbed = EmbedBuilder.from(originalEmbed)
+          .setColor('#f39c12')
+          .setDescription(updatedDesc)
+          .setFooter({ text: `✅ Appealing: ${infraction?.type ?? '?'} / ${infraction?.ruleId ?? '?'} | ${date} | ${duration}` });
+
+        await interaction.message.edit({ embeds: [updatedEmbed], components: [] });
+      } catch (_) { /* best effort */ }
+
+      await interaction.editReply({
+        content: `✅ Your appeal for the **${infraction?.type ?? 'infraction'} / ${infraction?.ruleId ?? '?'}** has been submitted. Staff will review it shortly.`,
+      });
+    } catch (err: any) {
+      console.error('Error linking appeal infraction:', err);
+      await interaction.editReply({ content: `❌ An error occurred: ${err.message}` });
+    }
+  }
+
+  private async handleAppealLinkAccount(interaction: any): Promise<void> {
+    const clicker = interaction.user;
+    const appealerDiscordId = interaction.customId.replace('uucs_appeal_link_btn_', '');
+
+    try {
+      // Staff-only check
+      const guild = interaction.guild;
+      const member = await guild.members.fetch(clicker.id).catch(() => null);
+      if (!member) {
+        await interaction.reply({ content: '❌ Could not verify your roles.', ephemeral: true });
+        return;
+      }
+      const adminRoleId = process.env.DISCORD_ADMIN_ROLE_ID || '';
+      const gmRoleId = process.env.DISCORD_REFORGERGM_ROLE_ID || '';
+      const modRoleId = process.env.DISCORD_MOD_ROLE_ID || '';
+      const isStaff = (adminRoleId && member.roles.cache.has(adminRoleId)) ||
+                      (gmRoleId && member.roles.cache.has(gmRoleId)) ||
+                      (modRoleId && member.roles.cache.has(modRoleId));
+      if (!isStaff) {
+        await interaction.reply({ content: '❌ Only staff can link accounts.', ephemeral: true });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`uucs_appeal_link_modal_${appealerDiscordId}`)
+        .setTitle('Link UUCS Profile');
+
+      const platformIdInput = new TextInputBuilder()
+        .setCustomId('platform_id')
+        .setLabel('Arma Platform ID (Steam64 or BI ID)')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('e.g. 76561198000000001')
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(platformIdInput),
+      );
+      await interaction.showModal(modal);
+    } catch (err: any) {
+      console.error('Error handling appeal link account button:', err);
+      try {
+        await interaction.reply({ content: `❌ An error occurred: ${err.message}`, ephemeral: true });
+      } catch (_) { /* already replied */ }
+    }
+  }
+
+  private async handleAppealLinkModalSubmit(interaction: any): Promise<void> {
+    const appealerDiscordId = interaction.customId.replace('uucs_appeal_link_modal_', '');
+    const platformId = interaction.fields.getTextInputValue('platform_id')?.trim();
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      const websiteUrl = process.env.WEBSITE_URL || 'http://localhost:3000';
+      const threadId = interaction.channelId;
+      const guild = interaction.guild;
+      const threadUrl = `https://discord.com/channels/${guild.id}/${threadId}`;
+
+      const res = await axios.post(
+        `${websiteUrl}/api/staff/users/link-discord-to-arma`,
+        { discordId: appealerDiscordId, platformId, threadId, guildId: guild.id, threadUrl },
+        { headers: { 'x-api-secret': process.env.API_SECRET }, timeout: 10000 }
+      );
+
+      const { linkedUser, linkedInfraction } = res.data;
+
+      // Update the thread message to reflect the newly linked account
+      try {
+        const channel = await guild.channels.fetch(threadId).catch(() => null) as any;
+        if (channel) {
+          const messages = await channel.messages.fetch({ limit: 10 });
+          const botMsg = messages.find((m: any) => m.author.bot && m.embeds?.length > 0);
+          if (botMsg) {
+            const originalEmbed = botMsg.embeds[0];
+            const uucsUserUrl = `${websiteUrl}/dashboard/staff/users?q=${appealerDiscordId}`;
+            const appealsUrl = linkedInfraction
+              ? `${websiteUrl}/dashboard?openAppeal=${linkedInfraction._id}`
+              : `${websiteUrl}/dashboard`;
+
+            const unlinkedMarker = '\n\n⚠️ **This Discord account has no linked UUCS profile.**';
+            let newDesc = (originalEmbed.description || '').split(unlinkedMarker)[0];
+
+            if (linkedInfraction) {
+              const fmtDate = (d: any) => new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+              const infractionId = linkedInfraction._id?.toString();
+              const date = fmtDate(linkedInfraction.timestamp);
+              const dur = linkedInfraction.durationMinutes
+                ? `${Math.round(linkedInfraction.durationMinutes / 60 / 24)} day(s)`
+                : (linkedInfraction.type === 'LIFE_BAN' || linkedInfraction.type === 'BLACKLIST' ? 'Permanent' : '–');
+              newDesc += `\n\n✅ **Linked to:** ${linkedUser?.nickname || linkedUser?.username || 'User'} (platform: \`${platformId}\`)` +
+                `\n**Active ban linked:** ${linkedInfraction.type} / ${linkedInfraction.ruleId} | ${date} | ${dur}` +
+                `\n\n[UUCS User](${uucsUserUrl}) · [UUCS Appeals](${appealsUrl})`;
+            } else {
+              newDesc += `\n\n✅ **Linked to:** ${linkedUser?.nickname || linkedUser?.username || 'User'} (platform: \`${platformId}\`)` +
+                `\n_No active ban found for this platform ID._` +
+                `\n\n[UUCS User](${uucsUserUrl})`;
+            }
+
+            const updatedEmbed = EmbedBuilder.from(originalEmbed)
+              .setColor(linkedInfraction ? '#e74c3c' : '#2ecc71')
+              .setDescription(newDesc);
+
+            const linkBtn = new ButtonBuilder()
+              .setCustomId(`uucs_appeal_link_btn_${appealerDiscordId}`)
+              .setLabel('🔗 Link to UUCS Profile')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(true);
+
+            await botMsg.edit({
+              embeds: [updatedEmbed],
+              components: [new ActionRowBuilder<ButtonBuilder>().addComponents(linkBtn)],
+            });
+          }
+        }
+      } catch (_) { /* best effort */ }
+
+      const linkedName = linkedUser?.nickname || linkedUser?.username || 'Unknown';
+      await interaction.editReply({
+        content: `✅ Discord user <@${appealerDiscordId}> has been linked to UUCS profile **${linkedName}** (platform: \`${platformId}\`).` +
+          (linkedInfraction ? `\n\nActive ban **${linkedInfraction.type} / ${linkedInfraction.ruleId}** has been linked to this appeal thread.` : ''),
+      });
+    } catch (err: any) {
+      console.error('Error handling appeal link modal submit:', err);
+      const msg = err.response?.data?.error || err.message;
+      await interaction.editReply({ content: `❌ Failed to link account: ${msg}` });
     }
   }
 }

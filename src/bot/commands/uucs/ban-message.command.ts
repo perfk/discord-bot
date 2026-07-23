@@ -51,10 +51,8 @@ export class BanMessageCommand {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 
-    const commandText = `/ban user:${targetUser.id} message:${messageUrl}`;
-
     await interaction.reply({
-      content: `### Ban **${targetUser.username}**\nCopy the command below and paste it in the chat:\n\`\`\`\n${commandText}\n\`\`\``,
+      content: `### Ban **${targetUser.username}**\nClick below to open the website with this message pre-loaded as evidence.`,
       components: [row],
       ephemeral: true,
     });

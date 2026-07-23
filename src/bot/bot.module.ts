@@ -25,6 +25,7 @@ import { IssueInfractionCommand } from './commands/uucs/issue-infraction.command
 import { WarnMessageCommand } from './commands/uucs/warn-message.command';
 import { BanMessageCommand } from './commands/uucs/ban-message.command';
 import { TimeoutMessageCommand } from './commands/uucs/timeout-message.command';
+import { SaveAppealMessageCommand } from './commands/uucs/save-appeal-message.command';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { TimeoutMessageCommand } from './commands/uucs/timeout-message.command';
     WarnMessageCommand,
     BanMessageCommand,
     TimeoutMessageCommand,
+    SaveAppealMessageCommand,
   ],
 })
 export class BotModule { }

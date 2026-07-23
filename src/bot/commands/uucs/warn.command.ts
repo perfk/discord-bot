@@ -29,11 +29,11 @@ class WarnSlashCommandParams {
   rule: string;
 
   @Param({
-    description: 'Reason for the warning',
+    description: 'Staff remarks / reason for the warning',
     required: false,
     type: ParamType.STRING,
   })
-  reason?: string;
+  staff_remarks?: string;
 
   @Param({
     description: 'Timeout duration in hours (e.g. 24)',
@@ -43,11 +43,11 @@ class WarnSlashCommandParams {
   timeout?: number;
 
   @Param({
-    description: 'Message Link or ID to associate with this warning as evidence',
+    description: 'Discord message link or ID to associate with this warning as evidence',
     required: false,
     type: ParamType.STRING,
   })
-  message?: string;
+  message_link?: string;
 
   @Param({
     description: 'Evidence File Upload (Drag & Drop here)',
@@ -111,7 +111,7 @@ export class WarnCommand {
     try {
       const targetUserId = options.user;
       const ruleId = options.rule;
-      const reason = options.reason || 'No reason provided';
+      const reason = options.staff_remarks || null;
       const timeoutHours = options.timeout ?? 0;
       const durationMinutes = timeoutHours * 60;
 
@@ -124,15 +124,15 @@ export class WarnCommand {
       }
 
       let discordMessageId = null;
-      if (options.message) {
+      if (options.message_link) {
         let channelId = null;
         let messageId = null;
-        const match = options.message.match(/channels\/\d+\/(\d+)\/(\d+)/);
+        const match = options.message_link.match(/channels\/\d+\/(\d+)\/(\d+)/);
         if (match) {
           channelId = match[1];
           messageId = match[2];
         } else {
-          messageId = options.message.trim();
+          messageId = options.message_link.trim();
         }
 
         discordMessageId = messageId;

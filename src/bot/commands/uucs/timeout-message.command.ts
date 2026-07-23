@@ -51,11 +51,8 @@ export class TimeoutMessageCommand {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 
-    // Timeout command requires reason, so we populate with a placeholder or let them fill it.
-    const commandText = `/timeout user:${targetUser.id} reason: message:${messageUrl}`;
-
     await interaction.reply({
-      content: `### Timeout **${targetUser.username}**\nCopy the command below and paste it in the chat:\n\`\`\`\n${commandText}\n\`\`\``,
+      content: `### Timeout **${targetUser.username}**\nClick below to open the website with this message pre-loaded as evidence.`,
       components: [row],
       ephemeral: true,
     });
