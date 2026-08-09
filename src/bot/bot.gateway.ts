@@ -23,7 +23,7 @@ export class BotGateway {
     @InjectDb() private readonly db: mongo.Db,
   ) { }
 
-  @Once('ready')
+  @Once('clientReady')
   onReady(): void {
     this.logger.log(
       `Logged in as ${this.discordProvider.getClient().user.tag}!`,

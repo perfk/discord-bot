@@ -18,7 +18,7 @@ export class SwearJarService implements OnModuleInit {
     await this.loadSwearJarData();
   }
 
-  @Once('ready')
+  @Once('clientReady')
   onReady() {
     console.log('Swear Jar service is ready!');
   }
